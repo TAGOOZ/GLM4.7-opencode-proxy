@@ -1,0 +1,27 @@
+{
+  "name": "glm4.7-opencode-proxy",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start:proxy": "node dist/proxy.js",
+    "start:cli": "node dist/cli.js",
+    "dev:proxy": "node --loader ts-node/esm src/proxy.ts",
+    "dev:cli": "node --loader ts-node/esm src/cli.ts",
+    "test": "echo 'no tests yet'"
+  },
+  "dependencies": {
+    "@fastify/cors": "^9.0.1",
+    "commander": "^12.1.0",
+    "dotenv": "^16.4.5",
+    "fastify": "^4.28.1",
+    "playwright": "^1.49.0",
+    "web-wrapper-protocol": "file:../web_wrapper"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.5"
+  }
+}

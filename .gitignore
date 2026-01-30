@@ -17,3 +17,8 @@ build/
 tmp_*.js
 print_time.txt
 simple_print.txt
+web_wrapper/node_modules/
+web_wrapper/dist/
+ts_glm/node_modules/
+ts_glm/dist/
+node_modules/

@@ -15,6 +15,38 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
+## TypeScript (No Python)
+
+If you want to run everything in TypeScript (no Python bridge):
+
+```bash
+cd GLM4.7-opencode-proxy
+npm run install:all
+npm run build:all
+```
+
+Start the proxy:
+
+```bash
+cd ts_glm
+npm run start:proxy
+```
+
+Run the CLI:
+
+```bash
+cd ts_glm
+npm run start:cli -- login
+npm run start:cli -- chat <CHAT_ID> "Hello"
+```
+
+First-time Playwright setup (for `login`):
+
+```bash
+cd ts_glm
+npx playwright install
+```
+
 ## Quick Start (Token)
 
 Pick one of these:
@@ -128,7 +160,14 @@ Config is stored at `~/.config/glm-cli/config.json`
 
 ## OpenCode Setup (Local Proxy)
 
-Start the proxy:
+Start the proxy (TypeScript):
+
+```bash
+cd ts_glm
+npm run start:proxy
+```
+
+Or start the proxy (Python):
 
 ```bash
 source venv/bin/activate

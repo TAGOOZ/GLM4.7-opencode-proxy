@@ -1,0 +1,9 @@
+{
+  "name": "glm4.7-opencode-proxy-root",
+  "private": true,
+  "scripts": {
+    "install:all": "npm --prefix web_wrapper install && npm --prefix ts_glm install",
+    "build:all": "npm --prefix web_wrapper run build && npm --prefix ts_glm run build",
+    "test:wrapper": "npm --prefix web_wrapper run test"
+  }
+}
