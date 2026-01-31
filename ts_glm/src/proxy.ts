@@ -116,7 +116,7 @@ const inferReadToolCall = (tools: any[], userText: string) => {
   const readIntent = ["read", "open", "show", "cat", "contents", "what is in", "what's in", "display"];
   const path = extractFilePath(userText);
   const hasReadIntent = readIntent.some((k) => lowered.includes(k));
-  if (!hasReadIntent && !looksLikePath(path)) return null;
+  if (!hasReadIntent) return null;
   const tool = findTool(tools, "read") || findTool(tools, "read_file");
   if (!tool) return null;
   if (!path) return null;
@@ -359,6 +359,8 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
   const lastUser = messages.slice().reverse().find((m: any) => m.role === "user")?.content || "";
   const last = messages[messages.length - 1];
   const hasToolResult = Boolean(last && (last.role === "tool" || last.tool_call_id));
+  const toolResultCount = messages.filter((m: any) => m.role === "tool" || m.tool_call_id).length;
+  const maxToolLoops = Number(process.env.PROXY_TOOL_LOOP_LIMIT || "3");
   if (process.env.PROXY_DEBUG) {
     const roles = messages.map((m: any) => m.role).join(",");
     const sys = messages.find((m: any) => m.role === "system")?.content || "";
@@ -458,35 +460,14 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
       }
     }
 
-    if (hasToolResult && parsedData.actions.length > 0) {
-      const forceFinal: any = {
-        role: "assistant",
-        content: "Tool results are already provided. Return ONLY valid JSON with actions: [] and a final response. Do not call tools.",
-      };
-      let finalText = await collectGlmResponse(chatId, [...glmMessages, forceFinal]);
-      if (process.env.PROXY_DEBUG) {
-        const preview = finalText.length > 400 ? `${finalText.slice(0, 400)}…` : finalText;
-        console.log("proxy_debug model_post_tool_raw:", preview);
+    if (hasToolResult && parsedData.actions.length > 0 && toolResultCount >= maxToolLoops) {
+      const fallbackContent = parsedData.final || "Tool result received.";
+      if (stream) {
+        reply.raw.writeHead(200, { "Content-Type": "text/event-stream" });
+        reply.raw.write(streamContent(fallbackContent, model));
+        return reply.raw.end();
       }
-      let finalParsed = parseModelOutput(finalText, true);
-      if (!finalParsed.ok) {
-        const relaxed = parseModelOutput(finalText, false);
-        if (relaxed.ok) {
-          finalParsed = relaxed;
-        }
-      }
-      if (finalParsed.ok && finalParsed.data && finalParsed.data.actions.length === 0) {
-        parsed = finalParsed;
-        parsedData = finalParsed.data;
-      } else {
-        const fallbackContent = "Tool result received.";
-        if (stream) {
-          reply.raw.writeHead(200, { "Content-Type": "text/event-stream" });
-          reply.raw.write(streamContent(fallbackContent, model));
-          return reply.raw.end();
-        }
-        return reply.send(openaiContentResponse(fallbackContent, model));
-      }
+      return reply.send(openaiContentResponse(fallbackContent, model));
     }
 
     if (parsedData.actions.length === 0) {
