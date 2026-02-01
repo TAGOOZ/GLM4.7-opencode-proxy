@@ -176,6 +176,8 @@ python3 -m uvicorn glm_proxy.server:app --host 127.0.0.1 --port 8787
 
 Use `opencode.json` and select provider `glm-local`.
 
+**Note**: For detailed usage instructions, including file attachment workarounds and troubleshooting, see [OPENCODE_USAGE.md](OPENCODE_USAGE.md).
+
 ## License
 
 MIT
