@@ -322,17 +322,22 @@ export class GLMClient {
               const delta = choice.delta || {};
               let content = delta.content || "";
               if (!content) continue;
-              if (content.includes("<think>")) {
-                inThinking = true;
-                content = content.replace("<think>", "");
-              }
-              if (content.includes("</think>")) {
-                inThinking = false;
-                content = content.replace("</think>", "");
-                yield { type: "thinking_end", data: "" };
-              }
-              if (content) {
-                yield { type: inThinking ? "thinking" : "content", data: content };
+              const parts = content.split(/(<think>|<\/think>)/g).filter(Boolean);
+              for (const part of parts) {
+                if (part === "<think>") {
+                  inThinking = true;
+                  continue;
+                }
+                if (part === "</think>") {
+                  if (inThinking) {
+                    inThinking = false;
+                    yield { type: "thinking_end", data: "" };
+                  } else {
+                    inThinking = false;
+                  }
+                  continue;
+                }
+                yield { type: inThinking ? "thinking" : "content", data: part };
               }
             }
             continue;
