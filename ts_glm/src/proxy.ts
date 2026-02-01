@@ -719,13 +719,15 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
       enableThinking: false,
       parentMessageId: parentId,
     });
+    const streamId = `chatcmpl-${crypto.randomUUID().slice(0, 8)}`;
+    const created = Math.floor(Date.now() / 1000);
     let sentRole = false;
     for await (const chunk of generator) {
       if (chunk.type !== "content") continue;
       const payload = {
-        id: `chatcmpl-${crypto.randomUUID().slice(0, 8)}`,
+        id: streamId,
         object: "chat.completion.chunk",
-        created: Math.floor(Date.now() / 1000),
+        created,
         model,
         choices: [
           {
@@ -739,9 +741,9 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
       reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
     }
     const finalPayload = {
-      id: `chatcmpl-${crypto.randomUUID().slice(0, 8)}`,
+      id: streamId,
       object: "chat.completion.chunk",
-      created: Math.floor(Date.now() / 1000),
+      created,
       model,
       choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
     };
