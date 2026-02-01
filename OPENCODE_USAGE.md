@@ -55,7 +55,7 @@ Instead of relying on the CLI's file attachment feature, read the file content a
 
 ```bash
 # Read file content and pass it in the prompt
-FILE_CONTENT=$(cat opencode_e2e_1769885909/sample.md)
+FILE_CONTENT=$(cat examples/sample.md)
 opencode run -m glm-local/glm-4.7 "Using the following file content, provide a 2-sentence summary and suggest one improvement:
 
 \`\`\`
@@ -81,44 +81,33 @@ curl -X POST http://127.0.0.1:8787/v1/chat/completions \
   }'
 ```
 
-#### Option 3: Create a helper script
+#### Option 3: Use the included helper script
 
-Create a shell script that properly handles file attachments:
+This repository includes a helper script `opencode-with-file.sh` that properly handles file attachments.
+
+**Features:**
+- Reads file content and embeds it in the prompt
+- Validates file existence and size (max 1MB)
+- Supports all opencode flags (--format, -m, --session, -f)
+- Already has execute permissions set
+
+**Usage:**
 
 ```bash
-#!/bin/bash
-# opencode-with-file.sh
-# Usage: ./opencode-with-file.sh <file> <message>
+# Basic usage
+./opencode-with-file.sh -f examples/sample.md "Provide a 2-sentence summary"
 
-FILE=$1
-MESSAGE=$2
+# With options
+./opencode-with-file.sh --format json -m glm-local/glm-4.7 -f examples/sample.md "Analyze this file"
 
-if [ ! -f "$FILE" ]; then
-  echo "Error: File not found: $FILE"
-  exit 1
-fi
+# With session ID
+./opencode-with-file.sh --session ses_abc123 -f data.txt "Continue analyzing"
 
-CONTENT=$(cat "$FILE")
-FULL_PROMPT="File content from $FILE:
-
-\`\`\`
-$CONTENT
-\`\`\`
-
-$MESSAGE"
-
-opencode run -m glm-local/glm-4.7 "$FULL_PROMPT"
+# Help
+./opencode-with-file.sh --help
 ```
 
-Make it executable:
-```bash
-chmod +x opencode-with-file.sh
-```
-
-Use it:
-```bash
-./opencode-with-file.sh sample.md "Provide a 2-sentence summary and suggest one improvement."
-```
+**Note**: The script already has execute permissions set in this repository.
 
 ## Testing the Proxy
 

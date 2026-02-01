@@ -70,6 +70,16 @@ if [ -n "$FILE" ] && [ ! -f "$FILE" ]; then
   exit 1
 fi
 
+# Check file size (limit to 1MB for safety)
+if [ -n "$FILE" ]; then
+  FILE_SIZE=$(stat -f%z "$FILE" 2>/dev/null || stat -c%s "$FILE" 2>/dev/null)
+  MAX_SIZE=$((1024 * 1024))  # 1MB
+  if [ "$FILE_SIZE" -gt "$MAX_SIZE" ]; then
+    echo "Error: File too large: $FILE ($(($FILE_SIZE / 1024))KB). Maximum size is $(($MAX_SIZE / 1024))KB." >&2
+    exit 1
+  fi
+fi
+
 # Build the prompt
 if [ -n "$FILE" ]; then
   FILENAME=$(basename "$FILE")
