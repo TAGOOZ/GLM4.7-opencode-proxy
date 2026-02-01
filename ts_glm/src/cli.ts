@@ -3,6 +3,9 @@ import { Command } from "commander";
 import { loadToken, saveConfig, saveEnvToken, loadConfig } from "./config.js";
 import { GLMClient } from "./glmClient.js";
 import { chromium } from "playwright";
+import fs from "fs";
+import os from "os";
+import path from "path";
 
 const program = new Command();
 
@@ -13,6 +16,42 @@ const getClient = (): GLMClient => {
     process.exit(1);
   }
   return new GLMClient(token);
+};
+
+const decodeJwtPayload = (token: string): Record<string, unknown> | null => {
+  try {
+    const payload = token.split(".")[1] || "";
+    if (!payload) return null;
+    const pad = payload.length % 4 === 0 ? "" : "=".repeat(4 - (payload.length % 4));
+    const decoded = Buffer.from(payload + pad, "base64").toString("utf-8");
+    return JSON.parse(decoded) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+};
+
+const expandHome = (input: string): string => {
+  if (!input.startsWith("~")) return input;
+  return path.join(os.homedir(), input.slice(1));
+};
+
+const defaultProfileDirs = new Set([
+  path.join(os.homedir(), ".config", "google-chrome"),
+  path.join(os.homedir(), ".config", "chromium"),
+]);
+
+const resolveProfileDir = (input?: string, channel?: string): string | null => {
+  if (input) {
+    const expanded = expandHome(input);
+    if (defaultProfileDirs.has(expanded)) {
+      return `${expanded}-glm`;
+    }
+    return expanded;
+  }
+  if (channel) {
+    return path.join(os.homedir(), ".config", "glm-cli", `browser-profile-${channel}`);
+  }
+  return null;
 };
 
 program
@@ -43,6 +82,9 @@ program
   .option("--headless", "Run browser headless", false)
   .option("--timeout <seconds>", "Seconds to wait for login", "300")
   .option("--check", "Validate saved token and exit", false)
+  .option("--allow-guest", "Accept guest token without Google login", false)
+  .option("--channel <channel>", "Playwright browser channel (chrome, chromium, msedge)")
+  .option("--profile <path>", "Use a persistent browser profile directory")
   .action(async (opts) => {
     if (opts.check) {
       try {
@@ -58,33 +100,85 @@ program
 
     console.log("Login flow:\n1) A browser window will open at chat.z.ai\n2) Sign in with Google\n3) Return here and wait; token will be captured automatically");
     const timeoutMs = Number(opts.timeout) * 1000;
-    const browser = await chromium.launch({ headless: Boolean(opts.headless) });
-    const context = await browser.newContext();
+    const launchOptions: Record<string, unknown> = { headless: Boolean(opts.headless) };
+    if (opts.channel) {
+      launchOptions.channel = opts.channel;
+    }
+    let browser: Awaited<ReturnType<typeof chromium.launch>> | null = null;
+    let profileDir = resolveProfileDir(opts.profile, opts.channel);
+    if (profileDir) {
+      fs.mkdirSync(profileDir, { recursive: true });
+      if (defaultProfileDirs.has(profileDir.replace(/-glm$/, ""))) {
+        console.log(`Using dedicated profile: ${profileDir}`);
+      }
+    }
+    let context = null as Awaited<ReturnType<typeof chromium.launchPersistentContext>> | null;
+    try {
+      context = profileDir
+        ? await chromium.launchPersistentContext(profileDir, launchOptions)
+        : ((browser = await chromium.launch(launchOptions)), await browser.newContext());
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (profileDir && /ProcessSingleton|non-default data directory/i.test(message)) {
+        const fallback = path.join(os.homedir(), ".config", "glm-cli", `browser-profile-${Date.now()}`);
+        fs.mkdirSync(fallback, { recursive: true });
+        console.warn(`Profile locked or not allowed. Retrying with: ${fallback}`);
+        context = await chromium.launchPersistentContext(fallback, launchOptions);
+      } else {
+        throw err;
+      }
+    }
     const page = await context.newPage();
     await page.goto("https://chat.z.ai", { waitUntil: "domcontentloaded" });
 
     const start = Date.now();
     let token: string | null = null;
+    let warnedGuest = false;
     while (Date.now() - start < timeoutMs) {
       const cookies = await context.cookies();
       const tokenCookie = cookies.find((c) => c.name === "token");
+      let candidate: string | null = null;
       if (tokenCookie?.value) {
-        token = tokenCookie.value;
-        break;
+        candidate = tokenCookie.value;
       }
       try {
         const local = await page.evaluate(() => localStorage.getItem("token") || localStorage.getItem("access_token") || "");
         if (local) {
-          token = local;
-          break;
+          candidate = local;
         }
       } catch {
         // ignore
       }
+      if (candidate) {
+        if (opts.allowGuest) {
+          token = candidate;
+          break;
+        }
+        try {
+          const client = new GLMClient(candidate);
+          const settings = await client.getUserSettings();
+          const email = typeof (settings as { email?: unknown }).email === "string" ? (settings as any).email : "";
+          const isGuest = email.endsWith("@guest.com") || email.startsWith("Guest-");
+          if (!isGuest) {
+            token = candidate;
+            break;
+          }
+          if (!warnedGuest) {
+            console.log("Guest session detected. Complete Google sign-in, or re-run with --allow-guest.");
+            warnedGuest = true;
+          }
+        } catch {
+          // keep waiting for a usable token
+        }
+      }
       await new Promise((r) => setTimeout(r, 1000));
     }
 
-    await browser.close();
+    if (browser) {
+      await browser.close();
+    } else if (context) {
+      await context.close();
+    }
 
     if (!token) {
       console.error("Could not capture token. Try again or use 'glm config --token'.");
@@ -223,11 +317,17 @@ program
     const client = getClient();
     try {
       const settings = await client.getUserSettings();
-      if (!settings) {
-        console.log("null");
+      if (settings && typeof settings === "object" && Object.keys(settings).length > 0) {
+        console.log(JSON.stringify(settings, null, 2));
         return;
       }
-      console.log(JSON.stringify(settings, null, 2));
+      const token = loadToken();
+      const payload = token ? decodeJwtPayload(token) : null;
+      if (payload) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      console.log("null");
     } catch (err) {
       console.error(`Error: ${(err as Error).message}`);
       process.exit(1);
