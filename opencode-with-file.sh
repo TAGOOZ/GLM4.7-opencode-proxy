@@ -46,14 +46,21 @@ while [[ $# -gt 0 ]]; do
       SESSION="$2"
       shift 2
       ;;
+    --)
+      shift
+      if [ $# -gt 0 ]; then
+        MESSAGE="$*"
+      fi
+      break
+      ;;
     -h|--help)
       echo "$USAGE"
       exit 0
       ;;
     *)
-      # Assume remaining argument is the message
-      MESSAGE="$1"
-      shift
+      # Treat remaining args as the message (supports unquoted multi-word prompts)
+      MESSAGE="$*"
+      break
       ;;
   esac
 done
@@ -70,14 +77,25 @@ if [ -n "$FILE" ] && [ ! -f "$FILE" ]; then
   exit 1
 fi
 
-# Check file size (limit to 1MB for safety)
+# Check file size (limit to 1MB or ARG_MAX-derived cap for safety)
 if [ -n "$FILE" ]; then
   # Try BSD stat (macOS, FreeBSD: -f%z) then GNU stat (Linux: -c%s)
   FILE_SIZE=$(stat -f%z "$FILE" 2>/dev/null || stat -c%s "$FILE" 2>/dev/null || echo "")
   if [ -z "$FILE_SIZE" ]; then
     echo "Warning: Could not determine file size for $FILE. Proceeding without size check." >&2
   else
-    MAX_SIZE=$((1024 * 1024))  # 1MB
+    MAX_SIZE=$((1024 * 1024))  # 1MB default
+    ARG_MAX=$(getconf ARG_MAX 2>/dev/null || echo "")
+    if [ -n "$ARG_MAX" ]; then
+      # Leave headroom for environment and other args; cap to ~50% of ARG_MAX
+      SAFE_MAX=$((ARG_MAX / 2))
+      if [ "$SAFE_MAX" -gt 0 ] && [ "$SAFE_MAX" -lt "$MAX_SIZE" ]; then
+        MAX_SIZE="$SAFE_MAX"
+      fi
+    else
+      # Conservative fallback to avoid ARG_MAX errors on some systems
+      MAX_SIZE=$((256 * 1024))
+    fi
     if [ "$FILE_SIZE" -gt "$MAX_SIZE" ]; then
       FILE_SIZE_KB=$((FILE_SIZE / 1024))
       MAX_SIZE_KB=$((MAX_SIZE / 1024))
@@ -100,6 +118,15 @@ $CONTENT
 $MESSAGE"
 else
   FULL_PROMPT="$MESSAGE"
+fi
+
+# Final guard against argument length limits
+if [ -n "$ARG_MAX" ]; then
+  FULL_LEN=${#FULL_PROMPT}
+  if [ "$FULL_LEN" -gt "$MAX_SIZE" ]; then
+    echo "Error: Prompt too large for CLI invocation (${FULL_LEN} bytes). Try a smaller file or use the API option in OPENCODE_USAGE.md." >&2
+    exit 1
+  fi
 fi
 
 # Build opencode command arguments

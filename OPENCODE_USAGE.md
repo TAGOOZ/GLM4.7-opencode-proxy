@@ -87,8 +87,9 @@ This repository includes a helper script `opencode-with-file.sh` that properly h
 
 **Features:**
 - Reads file content and embeds it in the prompt
-- Validates file existence and size (max 1MB)
+- Validates file existence and size (max 1MB, or smaller if ARG_MAX is low)
 - Supports all opencode flags (--format, -m, --session, -f)
+- Supports `--` to separate options from multi-word messages
 - Already has execute permissions set
 
 **Usage:**
@@ -99,6 +100,9 @@ This repository includes a helper script `opencode-with-file.sh` that properly h
 
 # With options
 ./opencode-with-file.sh --format json -m glm-local/glm-4.7 -f examples/sample.md "Analyze this file"
+
+# Use -- to safely pass a message that starts with a dash or contains many words
+./opencode-with-file.sh -f examples/sample.md -- "-Summarize this file in two sentences"
 
 # With session ID
 ./opencode-with-file.sh --session ses_abc123 -f data.txt "Continue analyzing"
