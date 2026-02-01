@@ -4,7 +4,13 @@ import cors from "@fastify/cors";
 import { GLMClient } from "./glmClient.js";
 import { loadToken } from "./config.js";
 import crypto from "crypto";
-import { SYSTEM_PROMPT, parseModelOutput } from "web-wrapper-protocol";
+import {
+  SYSTEM_PROMPT,
+  extractFirstJsonObject,
+  parseModelOutput,
+  validateModelOutput,
+  type ModelOutput,
+} from "web-wrapper-protocol";
 
 const app = Fastify();
 app.register(cors, { origin: true });
@@ -70,6 +76,106 @@ const isNameMatch = (target: string, candidate: string) => {
   if (candidate === `${target}file`) return true;
   if (candidate === `${target}dir`) return true;
   return false;
+};
+
+const extractContentText = (content: unknown): string => {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (!part) return "";
+        if (typeof part === "string") return part;
+        if (typeof part === "object") {
+          const text = (part as { text?: unknown }).text;
+          if (typeof text === "string") return text;
+        }
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n");
+  }
+  if (content && typeof content === "object") {
+    const text = (content as { text?: unknown }).text;
+    if (typeof text === "string") return text;
+  }
+  return "";
+};
+
+const removeComments = (input: string): string => {
+  return input
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|[^:])\/\/.*$/gm, "$1");
+};
+
+const removeTrailingCommas = (input: string): string => {
+  return input.replace(/,\s*([}\]])/g, "$1");
+};
+
+const repairPlannerJson = (input: string): string => {
+  let repaired = removeTrailingCommas(removeComments(input));
+  const planMatch = repaired.match(/"plan"\s*:\s*([\s\S]*?)(?=,\s*"actions"\s*:)/);
+  if (planMatch && !planMatch[1].trim().startsWith("[")) {
+    const body = planMatch[1].trim().replace(/,\s*$/, "");
+    repaired = repaired.replace(planMatch[0], `"plan": [${body}]`);
+  }
+  const actionsMatch = repaired.match(/"actions"\s*:\s*([\s\S]*?)(?=,\s*"(final|thought)"\s*:|}$)/);
+  if (actionsMatch && !actionsMatch[1].trim().startsWith("[")) {
+    const body = actionsMatch[1].trim().replace(/,\s*$/, "");
+    repaired = repaired.replace(actionsMatch[0], `"actions": [${body}]`);
+  }
+  return repaired;
+};
+
+const coercePlannerData = (data: any): ModelOutput => {
+  const plan = Array.isArray(data?.plan)
+    ? data.plan.map((p: any) => String(p))
+    : typeof data?.plan === "string"
+      ? [data.plan]
+      : [];
+  const rawActions = Array.isArray(data?.actions)
+    ? data.actions
+    : data?.actions
+      ? [data.actions]
+      : [];
+  const actions = rawActions.map((action: any) => {
+    const safety = action?.safety && typeof action.safety === "object" ? action.safety : {};
+    const risk =
+      safety.risk === "medium" || safety.risk === "high" || safety.risk === "low" ? safety.risk : "low";
+    return {
+      tool: typeof action?.tool === "string" ? action.tool : "",
+      args: action?.args && typeof action.args === "object" ? action.args : {},
+      why: typeof action?.why === "string" ? action.why : "",
+      expect: typeof action?.expect === "string" ? action.expect : "",
+      safety: {
+        risk,
+        notes: typeof safety.notes === "string" ? safety.notes : "",
+      },
+    };
+  });
+  const output: ModelOutput = { plan, actions };
+  if (actions.length === 0) {
+    output.final = typeof data?.final === "string" ? data.final : "";
+  }
+  if (typeof data?.thought === "string") {
+    output.thought = data.thought;
+  }
+  return output;
+};
+
+const tryRepairPlannerOutput = (raw: string): ModelOutput | null => {
+  const extracted = extractFirstJsonObject(raw);
+  if (!extracted.json) return null;
+  const repaired = repairPlannerJson(extracted.json);
+  let parsed: any;
+  try {
+    parsed = JSON.parse(repaired);
+  } catch {
+    return null;
+  }
+  const coerced = coercePlannerData(parsed);
+  const validation = validateModelOutput(coerced);
+  if (!validation.ok) return null;
+  return coerced;
 };
 
 type ToolInfo = {
@@ -181,6 +287,15 @@ const normalizeArgsForTool = (toolInfo: ToolInfo | null, args: Record<string, un
       }
     }
     normalized[key] = value;
+  }
+  const descKey = allowedNorm.get("description");
+  if (descKey && normalized[descKey] == null) {
+    const command = normalized.command ?? normalized.cmd;
+    const detail =
+      typeof command === "string" && command.trim()
+        ? `run shell command: ${command.trim()}`
+        : "run shell command";
+    normalized[descKey] = detail;
   }
   return normalized;
 };
@@ -532,7 +647,7 @@ const convertMessages = (messages: any[], tools: any[]): { role: string; content
       out.push({ role: "assistant", content: JSON.stringify(msg.tool_calls) });
       continue;
     }
-    out.push({ role: msg.role, content: msg.content || "" });
+    out.push({ role: msg.role, content: extractContentText(msg.content) || "" });
   }
   return out;
 };
@@ -674,12 +789,59 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
 
   const chatId = await ensureChat();
 
-  const lastUser = messages.slice().reverse().find((m: any) => m.role === "user")?.content || "";
+  const lastUserContent = messages.slice().reverse().find((m: any) => m.role === "user")?.content;
+  const lastUser = extractContentText(lastUserContent) || "";
   const last = messages[messages.length - 1];
   const hasToolResult = Boolean(last && (last.role === "tool" || last.tool_call_id));
   const toolResultCount = messages.filter((m: any) => m.role === "tool" || m.tool_call_id).length;
   const maxToolLoops = Number(process.env.PROXY_TOOL_LOOP_LIMIT || "3");
   const toolRegistry = buildToolRegistry(tools);
+  const loweredUser = lastUser.toLowerCase();
+  const hasEmbeddedRead = /Called the Read tool with the following input/i.test(lastUser);
+  const fileMention =
+    /@[^\\s]+/.test(lastUser) || /[A-Za-z0-9_./-]+\\.[A-Za-z0-9]{1,10}/.test(lastUser);
+  const repoStructureIntent =
+    /(repo|repository|project|folder|directory).*(structure|tree|files|folders|contents|layout)/.test(loweredUser) ||
+    /check (the )?(repo|repository|project)/.test(loweredUser);
+  const actionableKeywords = [
+    "create",
+    "write",
+    "edit",
+    "modify",
+    "delete",
+    "remove",
+    "save",
+    "rename",
+    "move",
+    "run",
+    "execute",
+    "install",
+    "search",
+    "find",
+    "list",
+    "open",
+    "read",
+    "inspect",
+    "show",
+    "contents",
+    "grep",
+    "rg",
+    "ripgrep",
+    "ls",
+    "tree",
+    "mkdir",
+    "touch",
+    "cp",
+    "mv",
+  ];
+  const readLikeWithFile = /(summarize|summary|explain|describe|review|what does|what is in)/.test(loweredUser);
+  let actionable =
+    actionableKeywords.some((k) => loweredUser.includes(k)) ||
+    repoStructureIntent ||
+    (fileMention && readLikeWithFile);
+  if (hasEmbeddedRead) {
+    actionable = false;
+  }
   if (process.env.PROXY_DEBUG) {
     const roles = messages.map((m: any) => m.role).join(",");
     const sys = messages.find((m: any) => m.role === "system")?.content || "";
@@ -700,8 +862,9 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
     toolChoice === "required" ||
     (toolChoice && typeof toolChoice === "object" && toolChoice.type === "function");
 
+  const allowHeuristicTools = !hasEmbeddedRead;
   const inferredToolCall =
-    !hasToolResult && tools.length > 0
+    allowHeuristicTools && !hasToolResult && tools.length > 0
       ? inferReadToolCall(toolRegistry, lastUser) ||
         inferWriteToolCall(toolRegistry, lastUser) ||
         inferRunToolCall(toolRegistry, lastUser) ||
@@ -709,7 +872,7 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
       : null;
 
   const shouldAttemptTools =
-    tools.length > 0 && (toolChoiceRequired || Boolean(inferredToolCall) || hasToolResult);
+    tools.length > 0 && (toolChoiceRequired || Boolean(inferredToolCall) || hasToolResult || actionable);
   let glmMessages = convertMessages(messages, shouldAttemptTools ? tools : []);
   if (hasToolResult && shouldAttemptTools) {
     glmMessages = [
@@ -785,9 +948,35 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
     }
 
     if (!parsed.ok || !parsed.data) {
+      const repaired = tryRepairPlannerOutput(responseText);
+      if (repaired) {
+        parsed = { ok: true, data: repaired };
+      }
+    }
+
+    if (!parsed.ok || !parsed.data) {
       const rawToolCalls = parseRawToolCalls(responseText, toolRegistry);
       if (rawToolCalls) {
         return sendToolCalls(reply, rawToolCalls, model, stream);
+      }
+      if (hasToolResult) {
+        const looksLikePlannerJson = /"actions"\s*:|"tool"\s*:|"plan"\s*:/.test(responseText) || responseText.trim().startsWith("{");
+        if (looksLikePlannerJson) {
+          const finalMessages = [
+            {
+              role: "system",
+              content: "Use the tool results above to answer the user. Return plain text only and do not call tools.",
+            },
+            ...convertMessages(messages, []),
+          ];
+          const finalText = await collectGlmResponse(chatId, finalMessages);
+          if (stream) {
+            reply.raw.writeHead(200, { "Content-Type": "text/event-stream" });
+            reply.raw.write(streamContent(finalText, model));
+            return reply.raw.end();
+          }
+          return reply.send(openaiContentResponse(finalText, model));
+        }
       }
       if (hasToolResult && responseText.trim()) {
         if (stream) {
@@ -797,11 +986,12 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
         }
         return reply.send(openaiContentResponse(responseText, model));
       }
-      const fallbackTools =
-        inferReadToolCall(toolRegistry, lastUser) ||
-        inferWriteToolCall(toolRegistry, lastUser) ||
-        inferRunToolCall(toolRegistry, lastUser) ||
-        inferListToolCall(toolRegistry, lastUser);
+      const fallbackTools = allowHeuristicTools
+        ? inferReadToolCall(toolRegistry, lastUser) ||
+          inferWriteToolCall(toolRegistry, lastUser) ||
+          inferRunToolCall(toolRegistry, lastUser) ||
+          inferListToolCall(toolRegistry, lastUser)
+        : null;
       if (fallbackTools) {
         return sendToolCalls(reply, fallbackTools, model, stream);
       }
@@ -834,11 +1024,12 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
 
     if (parsedData.actions.length === 0) {
       if (!hasToolResult) {
-        const fallbackTools =
-          inferReadToolCall(toolRegistry, lastUser) ||
-          inferWriteToolCall(toolRegistry, lastUser) ||
-          inferRunToolCall(toolRegistry, lastUser) ||
-          inferListToolCall(toolRegistry, lastUser);
+        const fallbackTools = allowHeuristicTools
+          ? inferReadToolCall(toolRegistry, lastUser) ||
+            inferWriteToolCall(toolRegistry, lastUser) ||
+            inferRunToolCall(toolRegistry, lastUser) ||
+            inferListToolCall(toolRegistry, lastUser)
+          : null;
         if (fallbackTools) {
           return sendToolCalls(reply, fallbackTools, model, stream);
         }
@@ -882,6 +1073,16 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
   }
 
   if (stream) {
+    if (tools.length > 0 && !shouldAttemptTools) {
+      const fullText = await collectGlmResponse(chatId, glmMessages);
+      const rawToolCalls = parseRawToolCalls(fullText, toolRegistry);
+      if (rawToolCalls) {
+        return sendToolCalls(reply, rawToolCalls, model, true);
+      }
+      reply.raw.writeHead(200, { "Content-Type": "text/event-stream" });
+      reply.raw.write(streamContent(fullText, model));
+      return reply.raw.end();
+    }
     reply.raw.writeHead(200, { "Content-Type": "text/event-stream" });
     let parentId: string | null = null;
     try {
@@ -930,6 +1131,12 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
   }
 
   const content = await collectGlmResponse(chatId, glmMessages);
+  if (tools.length > 0) {
+    const rawToolCalls = parseRawToolCalls(content, toolRegistry);
+    if (rawToolCalls) {
+      return reply.send(openaiToolResponse(rawToolCalls, model));
+    }
+  }
   return reply.send(openaiContentResponse(content, model));
 };
 
