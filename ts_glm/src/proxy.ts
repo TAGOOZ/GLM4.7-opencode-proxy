@@ -348,8 +348,9 @@ const inferWriteToolCall = (tools: any[], userText: string) => {
 
 const inferListToolCall = (tools: any[], userText: string) => {
   const lowered = userText.toLowerCase();
-  const listIntent = ["list files", "list folders", "list directory", "ls", "show files", "inspect files"];
-  if (!listIntent.some((k) => lowered.includes(k))) return null;
+  const listIntent = ["list files", "list folders", "list directory", "show files", "inspect files"];
+  const hasLsToken = /\bls\b/.test(lowered);
+  if (!hasLsToken && !listIntent.some((k) => lowered.includes(k))) return null;
   const tool = findTool(tools, "glob") || findTool(tools, "list") || findTool(tools, "list_dir");
   if (!tool) return null;
   const key = pickArgKey(tool, ["pattern", "path"]);
