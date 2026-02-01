@@ -72,6 +72,7 @@ fi
 
 # Check file size (limit to 1MB for safety)
 if [ -n "$FILE" ]; then
+  # Try BSD stat (macOS, FreeBSD: -f%z) then GNU stat (Linux: -c%s)
   FILE_SIZE=$(stat -f%z "$FILE" 2>/dev/null || stat -c%s "$FILE" 2>/dev/null || echo "")
   if [ -z "$FILE_SIZE" ]; then
     echo "Warning: Could not determine file size for $FILE. Proceeding without size check." >&2
