@@ -72,6 +72,11 @@ const isNameMatch = (target: string, candidate: string) => {
   return false;
 };
 
+type ToolInfo = {
+  tool: any;
+  argKeys: string[];
+};
+
 const ARG_SYNONYMS: Record<string, string> = {
   filepath: "path",
   file_path: "path",
@@ -80,25 +85,76 @@ const ARG_SYNONYMS: Record<string, string> = {
   cmd: "command",
 };
 
-const findTool = (tools: any[], name: string) => {
-  const target = normalizeToolName(name);
-  return tools.find((t) => {
-    const fn = t.function || {};
-    const names: string[] = [];
-    if (fn.name) names.push(fn.name);
-    if (fn.tool?.name) names.push(fn.tool.name);
-    if (t.name) names.push(t.name);
-    return names.some((n) => isNameMatch(target, normalizeToolName(n)));
-  });
+const TOOL_NAME_ALIASES: Record<string, string[]> = {
+  read: ["read_file", "readfile", "open_file"],
+  write: ["write_file", "writefile", "save_file", "create_file"],
+  list: ["list_dir", "listdir"],
+  run: ["run_shell", "shell", "bash"],
 };
 
-const normalizeArgsForTool = (tool: any, args: Record<string, unknown>): Record<string, unknown> => {
+const collectToolNames = (tool: any): string[] => {
+  const names: string[] = [];
+  const fn = tool.function || {};
+  if (fn.name) names.push(fn.name);
+  if (fn.tool?.name) names.push(fn.tool.name);
+  if (tool.name) names.push(tool.name);
+  return names;
+};
+
+const collectArgKeys = (tool: any): string[] => {
   const props =
     tool?.function?.parameters?.properties ||
     tool?.parameters?.properties ||
     tool?.function?.tool?.parameters?.properties ||
     {};
-  const allowed = Object.keys(props);
+  return Object.keys(props);
+};
+
+const buildToolRegistry = (tools: any[]): Map<string, ToolInfo> => {
+  const registry = new Map<string, ToolInfo>();
+  for (const tool of tools) {
+    const argKeys = collectArgKeys(tool);
+    const info: ToolInfo = { tool, argKeys };
+    for (const name of collectToolNames(tool)) {
+      const normalized = normalizeToolName(name);
+      if (!registry.has(normalized)) {
+        registry.set(normalized, info);
+      }
+    }
+  }
+  for (const [canonical, aliases] of Object.entries(TOOL_NAME_ALIASES)) {
+    const allNames = [canonical, ...aliases];
+    let info: ToolInfo | undefined;
+    for (const name of allNames) {
+      const match = registry.get(normalizeToolName(name));
+      if (match) {
+        info = match;
+        break;
+      }
+    }
+    if (!info) continue;
+    for (const name of allNames) {
+      const normalized = normalizeToolName(name);
+      if (!registry.has(normalized)) {
+        registry.set(normalized, info);
+      }
+    }
+  }
+  return registry;
+};
+
+const findTool = (registry: Map<string, ToolInfo>, name: string): ToolInfo | null => {
+  const target = normalizeToolName(name);
+  const direct = registry.get(target);
+  if (direct) return direct;
+  for (const [candidate, info] of registry.entries()) {
+    if (isNameMatch(target, candidate)) return info;
+  }
+  return null;
+};
+
+const normalizeArgsForTool = (toolInfo: ToolInfo | null, args: Record<string, unknown>): Record<string, unknown> => {
+  const allowed = toolInfo?.argKeys || [];
   if (!allowed.length) return args;
   const allowedNorm = new Map<string, string>();
   for (const key of allowed) {
@@ -199,7 +255,7 @@ const parseRawJson = (raw: string): any | null => {
   return null;
 };
 
-const parseRawToolCalls = (raw: string, tools: any[]) => {
+const parseRawToolCalls = (raw: string, registry: Map<string, ToolInfo>) => {
   const data = parseRawJson(raw);
   if (!data) return null;
   let calls: any[] = [];
@@ -220,8 +276,8 @@ const parseRawToolCalls = (raw: string, tools: any[]) => {
     const func = call.function || call;
     const rawName = func?.name || call.name || call.tool;
     if (!rawName) continue;
-    const tool = findTool(tools, rawName);
-    if (!tool) continue;
+    const toolInfo = findTool(registry, rawName);
+    if (!toolInfo) continue;
     let args = func?.arguments ?? call.arguments ?? {};
     if (typeof args === "string") {
       try {
@@ -233,8 +289,8 @@ const parseRawToolCalls = (raw: string, tools: any[]) => {
     if (!args || typeof args !== "object") {
       args = {};
     }
-    args = normalizeArgsForTool(tool, args as Record<string, unknown>);
-    const toolName = tool.function?.name || tool.name || rawName;
+    args = normalizeArgsForTool(toolInfo, args as Record<string, unknown>);
+    const toolName = toolInfo.tool.function?.name || toolInfo.tool.name || rawName;
     toolCalls.push({
       id: `call_${crypto.randomUUID().slice(0, 8)}`,
       index: toolCalls.length,
@@ -248,14 +304,10 @@ const parseRawToolCalls = (raw: string, tools: any[]) => {
   return toolCalls.length ? toolCalls : null;
 };
 
-const pickArgKey = (tool: any, candidates: string[]): string => {
-  const props =
-    tool?.function?.parameters?.properties ||
-    tool?.parameters?.properties ||
-    tool?.function?.tool?.parameters?.properties ||
-    {};
+const pickArgKey = (toolInfo: ToolInfo | null, candidates: string[]): string => {
+  const argKeys = toolInfo?.argKeys || [];
   for (const key of candidates) {
-    if (key in props) return key;
+    if (argKeys.includes(key)) return key;
   }
   return candidates[0];
 };
@@ -298,17 +350,17 @@ const looksLikePath = (value: string | null): boolean => {
   return false;
 };
 
-const inferReadToolCall = (tools: any[], userText: string) => {
+const inferReadToolCall = (registry: Map<string, ToolInfo>, userText: string) => {
   const lowered = userText.toLowerCase();
   const readIntent = ["read", "open", "show", "cat", "contents", "what is in", "what's in", "display"];
   const path = extractFilePath(userText);
   const hasReadIntent = readIntent.some((k) => lowered.includes(k));
   if (!hasReadIntent) return null;
-  const tool = findTool(tools, "read") || findTool(tools, "read_file");
-  if (!tool) return null;
+  const toolInfo = findTool(registry, "read") || findTool(registry, "read_file");
+  if (!toolInfo) return null;
   if (!path) return null;
-  const key = pickArgKey(tool, ["filePath", "path"]);
-  const toolName = tool.function?.name || tool.name || "read";
+  const key = pickArgKey(toolInfo, ["filePath", "path"]);
+  const toolName = toolInfo.tool.function?.name || toolInfo.tool.name || "read";
   return [
     {
       id: `call_${crypto.randomUUID().slice(0, 8)}`,
@@ -319,9 +371,9 @@ const inferReadToolCall = (tools: any[], userText: string) => {
   ];
 };
 
-const inferWriteToolCall = (tools: any[], userText: string) => {
-  const tool = findTool(tools, "write") || findTool(tools, "write_file");
-  if (!tool) return null;
+const inferWriteToolCall = (registry: Map<string, ToolInfo>, userText: string) => {
+  const toolInfo = findTool(registry, "write") || findTool(registry, "write_file");
+  if (!toolInfo) return null;
   const patterns = [
     /create (?:a )?file\s+([\w./-]+)\s+with content\s+([\s\S]+)/i,
     /create (?:a )?file\s+([\w./-]+)\s+with\s+([\s\S]+)/i,
@@ -340,8 +392,8 @@ const inferWriteToolCall = (tools: any[], userText: string) => {
     filePath = filePath.replace(/^[\"'`]/, "").replace(/[\"'`].*$/, "");
     content = content.replace(/^[\"'`]/, "").replace(/[\"'`]$/, "");
     if (!filePath || !content) continue;
-    const pathKey = pickArgKey(tool, ["filePath", "path"]);
-  const toolName = tool.function?.name || tool.name || "write";
+    const pathKey = pickArgKey(toolInfo, ["filePath", "path"]);
+    const toolName = toolInfo.tool.function?.name || toolInfo.tool.name || "write";
     return [
       {
         id: `call_${crypto.randomUUID().slice(0, 8)}`,
@@ -355,8 +407,8 @@ const inferWriteToolCall = (tools: any[], userText: string) => {
   const simple = userText.match(/create (?:a )?file\s+([\w./-]+)/i);
   if (simple && simple[1]) {
     const filePath = simple[1];
-    const pathKey = pickArgKey(tool, ["filePath", "path"]);
-    const toolName = tool.function?.name || tool.name || "write";
+    const pathKey = pickArgKey(toolInfo, ["filePath", "path"]);
+    const toolName = toolInfo.tool.function?.name || toolInfo.tool.name || "write";
     return [
       {
         id: `call_${crypto.randomUUID().slice(0, 8)}`,
@@ -369,21 +421,21 @@ const inferWriteToolCall = (tools: any[], userText: string) => {
   return null;
 };
 
-const inferListToolCall = (tools: any[], userText: string) => {
+const inferListToolCall = (registry: Map<string, ToolInfo>, userText: string) => {
   const lowered = userText.toLowerCase();
   const listIntent = ["list files", "list folders", "list directory", "show files", "inspect files"];
   const hasLsToken = /\bls\b/.test(lowered);
   if (!hasLsToken && !listIntent.some((k) => lowered.includes(k))) return null;
-  const tool = findTool(tools, "glob") || findTool(tools, "list") || findTool(tools, "list_dir");
-  if (!tool) return null;
-  const key = pickArgKey(tool, ["pattern", "path"]);
+  const toolInfo = findTool(registry, "glob") || findTool(registry, "list") || findTool(registry, "list_dir");
+  if (!toolInfo) return null;
+  const key = pickArgKey(toolInfo, ["pattern", "path"]);
   const args = key === "pattern" ? { [key]: "**/*" } : { [key]: "." };
   return [
     {
       id: `call_${crypto.randomUUID().slice(0, 8)}`,
       index: 0,
       type: "function",
-      function: { name: tool.function?.name || tool.name || "glob", arguments: JSON.stringify(args) },
+      function: { name: toolInfo.tool.function?.name || toolInfo.tool.name || "glob", arguments: JSON.stringify(args) },
     },
   ];
 };
@@ -552,6 +604,7 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
   const hasToolResult = Boolean(last && (last.role === "tool" || last.tool_call_id));
   const toolResultCount = messages.filter((m: any) => m.role === "tool" || m.tool_call_id).length;
   const maxToolLoops = Number(process.env.PROXY_TOOL_LOOP_LIMIT || "3");
+  const toolRegistry = buildToolRegistry(tools);
   if (process.env.PROXY_DEBUG) {
     const roles = messages.map((m: any) => m.role).join(",");
     const sys = messages.find((m: any) => m.role === "system")?.content || "";
@@ -574,9 +627,9 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
 
   const inferredToolCall =
     !hasToolResult && tools.length > 0
-      ? inferReadToolCall(tools, lastUser) ||
-        inferWriteToolCall(tools, lastUser) ||
-        inferListToolCall(tools, lastUser)
+      ? inferReadToolCall(toolRegistry, lastUser) ||
+        inferWriteToolCall(toolRegistry, lastUser) ||
+        inferListToolCall(toolRegistry, lastUser)
       : null;
 
   const shouldAttemptTools =
@@ -656,7 +709,7 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
     }
 
     if (!parsed.ok || !parsed.data) {
-      const rawToolCalls = parseRawToolCalls(responseText, tools);
+      const rawToolCalls = parseRawToolCalls(responseText, toolRegistry);
       if (rawToolCalls) {
         return sendToolCalls(reply, rawToolCalls, model, stream);
       }
@@ -669,9 +722,9 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
         return reply.send(openaiContentResponse(responseText, model));
       }
       const fallbackTools =
-        inferReadToolCall(tools, lastUser) ||
-        inferWriteToolCall(tools, lastUser) ||
-        inferListToolCall(tools, lastUser);
+        inferReadToolCall(toolRegistry, lastUser) ||
+        inferWriteToolCall(toolRegistry, lastUser) ||
+        inferListToolCall(toolRegistry, lastUser);
       if (fallbackTools) {
         return sendToolCalls(reply, fallbackTools, model, stream);
       }
@@ -705,9 +758,9 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
     if (parsedData.actions.length === 0) {
       if (!hasToolResult) {
         const fallbackTools =
-          inferReadToolCall(tools, lastUser) ||
-          inferWriteToolCall(tools, lastUser) ||
-          inferListToolCall(tools, lastUser);
+          inferReadToolCall(toolRegistry, lastUser) ||
+          inferWriteToolCall(toolRegistry, lastUser) ||
+          inferListToolCall(toolRegistry, lastUser);
         if (fallbackTools) {
           return sendToolCalls(reply, fallbackTools, model, stream);
         }
@@ -721,8 +774,7 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
       return reply.send(openaiContentResponse(content, model));
     }
 
-    const allowed = new Set(tools.map((t: any) => t.function?.name).filter(Boolean));
-    const invalid = parsedData.actions.find((action) => !allowed.has(action.tool));
+    const invalid = parsedData.actions.find((action) => !findTool(toolRegistry, action.tool));
     if (invalid) {
       const content = `Unknown tool: ${invalid.tool}`;
       if (stream) {
@@ -733,15 +785,20 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
       return reply.send(openaiContentResponse(content, model));
     }
 
-    const toolCalls = parsedData.actions.map((action, idx) => ({
-      id: `call_${crypto.randomUUID().slice(0, 8)}`,
-      index: idx,
-      type: "function",
-      function: {
-        name: action.tool,
-        arguments: JSON.stringify(action.args || {}),
-      },
-    }));
+    const toolCalls = parsedData.actions.map((action, idx) => {
+      const toolInfo = findTool(toolRegistry, action.tool);
+      const toolName = toolInfo?.tool.function?.name || toolInfo?.tool.name || action.tool;
+      const args = normalizeArgsForTool(toolInfo, action.args || {});
+      return {
+        id: `call_${crypto.randomUUID().slice(0, 8)}`,
+        index: idx,
+        type: "function",
+        function: {
+          name: toolName,
+          arguments: JSON.stringify(args),
+        },
+      };
+    });
 
     return sendToolCalls(reply, toolCalls, model, stream);
   }
