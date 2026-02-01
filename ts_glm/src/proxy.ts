@@ -36,6 +36,29 @@ const buildToolPrompt = (tools: any[]): string => {
       lines.push(`  parameters: ${JSON.stringify(fn.parameters)}`);
     }
   }
+  lines.push("");
+  lines.push("Examples (format only):");
+  lines.push(
+    JSON.stringify({
+      plan: ["inspect file"],
+      actions: [
+        {
+          tool: "TOOL_NAME",
+          args: { path: "README.md" },
+          why: "need the file contents",
+          expect: "file text",
+          safety: { risk: "low", notes: "" },
+        },
+      ],
+    })
+  );
+  lines.push(
+    JSON.stringify({
+      plan: ["answer directly"],
+      actions: [],
+      final: "Concise response to the user.",
+    })
+  );
   return lines.join("\n");
 };
 
@@ -603,6 +626,25 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
       if (process.env.PROXY_DEBUG) {
         const preview = responseText.length > 400 ? `${responseText.slice(0, 400)}…` : responseText;
         console.log("proxy_debug model_retry_raw:", preview);
+      }
+      parsed = parseModelOutput(responseText, true);
+      if (!parsed.ok) {
+        const relaxed = parseModelOutput(responseText, false);
+        if (relaxed.ok) {
+          parsed = relaxed;
+        }
+      }
+    }
+
+    if (!parsed.ok) {
+      const stricter = {
+        role: "assistant",
+        content: "Return ONLY valid JSON object. No markdown. No extra keys.",
+      };
+      responseText = await collectGlmResponse(chatId, [...glmMessages, stricter]);
+      if (process.env.PROXY_DEBUG) {
+        const preview = responseText.length > 400 ? `${responseText.slice(0, 400)}…` : responseText;
+        console.log("proxy_debug model_retry2_raw:", preview);
       }
       parsed = parseModelOutput(responseText, true);
       if (!parsed.ok) {
