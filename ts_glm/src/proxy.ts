@@ -304,6 +304,22 @@ const parseRawToolCalls = (raw: string, registry: Map<string, ToolInfo>) => {
   return toolCalls.length ? toolCalls : null;
 };
 
+const extractCommand = (text: string): string | null => {
+  const fence = text.match(/```(?:bash|sh)?\n([\s\S]+?)```/i);
+  if (fence && fence[1]) {
+    return fence[1].trim();
+  }
+  const inline = text.match(/`([^`]+)`/);
+  if (inline && inline[1]) {
+    return inline[1].trim();
+  }
+  const runMatch = text.match(/\b(?:run|execute)\s*[:\-]?\s*([^\n]+)$/i);
+  if (runMatch && runMatch[1]) {
+    return runMatch[1].trim();
+  }
+  return null;
+};
+
 const pickArgKey = (toolInfo: ToolInfo | null, candidates: string[]): string => {
   const argKeys = toolInfo?.argKeys || [];
   for (const key of candidates) {
@@ -419,6 +435,23 @@ const inferWriteToolCall = (registry: Map<string, ToolInfo>, userText: string) =
     ];
   }
   return null;
+};
+
+const inferRunToolCall = (registry: Map<string, ToolInfo>, userText: string) => {
+  const toolInfo = findTool(registry, "run") || findTool(registry, "run_shell");
+  if (!toolInfo) return null;
+  const command = extractCommand(userText);
+  if (!command) return null;
+  const key = pickArgKey(toolInfo, ["command", "cmd"]);
+  const toolName = toolInfo.tool.function?.name || toolInfo.tool.name || "run_shell";
+  return [
+    {
+      id: `call_${crypto.randomUUID().slice(0, 8)}`,
+      index: 0,
+      type: "function",
+      function: { name: toolName, arguments: JSON.stringify({ [key]: command }) },
+    },
+  ];
 };
 
 const inferListToolCall = (registry: Map<string, ToolInfo>, userText: string) => {
@@ -629,6 +662,7 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
     !hasToolResult && tools.length > 0
       ? inferReadToolCall(toolRegistry, lastUser) ||
         inferWriteToolCall(toolRegistry, lastUser) ||
+        inferRunToolCall(toolRegistry, lastUser) ||
         inferListToolCall(toolRegistry, lastUser)
       : null;
 
@@ -724,6 +758,7 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
       const fallbackTools =
         inferReadToolCall(toolRegistry, lastUser) ||
         inferWriteToolCall(toolRegistry, lastUser) ||
+        inferRunToolCall(toolRegistry, lastUser) ||
         inferListToolCall(toolRegistry, lastUser);
       if (fallbackTools) {
         return sendToolCalls(reply, fallbackTools, model, stream);
@@ -760,6 +795,7 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
         const fallbackTools =
           inferReadToolCall(toolRegistry, lastUser) ||
           inferWriteToolCall(toolRegistry, lastUser) ||
+          inferRunToolCall(toolRegistry, lastUser) ||
           inferListToolCall(toolRegistry, lastUser);
         if (fallbackTools) {
           return sendToolCalls(reply, fallbackTools, model, stream);
