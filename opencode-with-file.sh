@@ -85,12 +85,12 @@ else
   FULL_PROMPT="$MESSAGE"
 fi
 
-# Build opencode command
-CMD="opencode run"
-[ -n "$FORMAT" ] && CMD="$CMD --format $FORMAT"
-CMD="$CMD -m $MODEL"
-[ -n "$SESSION" ] && CMD="$CMD --session $SESSION"
-CMD="$CMD \"$FULL_PROMPT\""
+# Build opencode command arguments
+ARGS=()
+[ -n "$FORMAT" ] && ARGS+=(--format "$FORMAT")
+ARGS+=(-m "$MODEL")
+[ -n "$SESSION" ] && ARGS+=(--session "$SESSION")
+ARGS+=("$FULL_PROMPT")
 
 # Execute
-eval $CMD
+opencode run "${ARGS[@]}"
