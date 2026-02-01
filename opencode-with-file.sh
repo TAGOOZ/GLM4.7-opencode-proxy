@@ -72,11 +72,17 @@ fi
 
 # Check file size (limit to 1MB for safety)
 if [ -n "$FILE" ]; then
-  FILE_SIZE=$(stat -f%z "$FILE" 2>/dev/null || stat -c%s "$FILE" 2>/dev/null)
-  MAX_SIZE=$((1024 * 1024))  # 1MB
-  if [ "$FILE_SIZE" -gt "$MAX_SIZE" ]; then
-    echo "Error: File too large: $FILE ($(($FILE_SIZE / 1024))KB). Maximum size is $(($MAX_SIZE / 1024))KB." >&2
-    exit 1
+  FILE_SIZE=$(stat -f%z "$FILE" 2>/dev/null || stat -c%s "$FILE" 2>/dev/null || echo "")
+  if [ -z "$FILE_SIZE" ]; then
+    echo "Warning: Could not determine file size for $FILE. Proceeding without size check." >&2
+  else
+    MAX_SIZE=$((1024 * 1024))  # 1MB
+    if [ "$FILE_SIZE" -gt "$MAX_SIZE" ]; then
+      FILE_SIZE_KB=$((FILE_SIZE / 1024))
+      MAX_SIZE_KB=$((MAX_SIZE / 1024))
+      echo "Error: File too large: $FILE (${FILE_SIZE_KB}KB). Maximum size is ${MAX_SIZE_KB}KB." >&2
+      exit 1
+    fi
   fi
 fi
 
