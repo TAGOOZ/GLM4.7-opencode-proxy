@@ -49,6 +49,14 @@ const isNameMatch = (target: string, candidate: string) => {
   return false;
 };
 
+const ARG_SYNONYMS: Record<string, string> = {
+  filepath: "path",
+  file_path: "path",
+  filename: "path",
+  file: "path",
+  cmd: "command",
+};
+
 const findTool = (tools: any[], name: string) => {
   const target = normalizeToolName(name);
   return tools.find((t) => {
@@ -59,6 +67,162 @@ const findTool = (tools: any[], name: string) => {
     if (t.name) names.push(t.name);
     return names.some((n) => isNameMatch(target, normalizeToolName(n)));
   });
+};
+
+const normalizeArgsForTool = (tool: any, args: Record<string, unknown>): Record<string, unknown> => {
+  const props =
+    tool?.function?.parameters?.properties ||
+    tool?.parameters?.properties ||
+    tool?.function?.tool?.parameters?.properties ||
+    {};
+  const allowed = Object.keys(props);
+  if (!allowed.length) return args;
+  const allowedNorm = new Map<string, string>();
+  for (const key of allowed) {
+    allowedNorm.set(normalizeToolName(key), key);
+  }
+  const normalized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(args)) {
+    const keyNorm = normalizeToolName(key);
+    const direct = allowedNorm.get(keyNorm);
+    if (direct) {
+      normalized[direct] = value;
+      continue;
+    }
+    if (keyNorm === "path" && allowedNorm.has("filepath")) {
+      normalized[allowedNorm.get("filepath") as string] = value;
+      continue;
+    }
+    const synonym = ARG_SYNONYMS[keyNorm];
+    if (synonym) {
+      const synKey = allowedNorm.get(normalizeToolName(synonym));
+      if (synKey) {
+        normalized[synKey] = value;
+        continue;
+      }
+    }
+    normalized[key] = value;
+  }
+  return normalized;
+};
+
+const stripFences = (input: string): string => {
+  const trimmed = input.trim();
+  if (trimmed.startsWith("```")) {
+    return trimmed.replace(/^```[a-zA-Z]*\n?/, "").replace(/```$/, "").trim();
+  }
+  return trimmed;
+};
+
+const extractJsonBlock = (text: string, openChar: string, closeChar: string): string | null => {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  let start = -1;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === "\"") {
+      inString = true;
+      continue;
+    }
+    if (ch === openChar) {
+      if (depth === 0) {
+        start = i;
+      }
+      depth += 1;
+    } else if (ch === closeChar) {
+      depth -= 1;
+      if (depth === 0 && start !== -1) {
+        return text.slice(start, i + 1);
+      }
+    }
+  }
+  return null;
+};
+
+const parseRawJson = (raw: string): any | null => {
+  const cleaned = stripFences(raw);
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    // try arrays first (tool_calls often output as arrays)
+    const arrayBlock = extractJsonBlock(cleaned, "[", "]");
+    if (arrayBlock) {
+      try {
+        return JSON.parse(arrayBlock);
+      } catch {
+        // ignore
+      }
+    }
+    const objectBlock = extractJsonBlock(cleaned, "{", "}");
+    if (objectBlock) {
+      try {
+        return JSON.parse(objectBlock);
+      } catch {
+        // ignore
+      }
+    }
+  }
+  return null;
+};
+
+const parseRawToolCalls = (raw: string, tools: any[]) => {
+  const data = parseRawJson(raw);
+  if (!data) return null;
+  let calls: any[] = [];
+  if (Array.isArray(data)) {
+    calls = data;
+  } else if (Array.isArray(data.tool_calls)) {
+    calls = data.tool_calls;
+  } else if (data.tool && data.arguments !== undefined) {
+    calls = [{ tool: data.tool, arguments: data.arguments }];
+  } else if (data.function || data.name) {
+    calls = [data];
+  } else {
+    return null;
+  }
+
+  const toolCalls = [];
+  for (const call of calls) {
+    const func = call.function || call;
+    const rawName = func?.name || call.name || call.tool;
+    if (!rawName) continue;
+    const tool = findTool(tools, rawName);
+    if (!tool) continue;
+    let args = func?.arguments ?? call.arguments ?? {};
+    if (typeof args === "string") {
+      try {
+        args = JSON.parse(args);
+      } catch {
+        args = {};
+      }
+    }
+    if (!args || typeof args !== "object") {
+      args = {};
+    }
+    args = normalizeArgsForTool(tool, args as Record<string, unknown>);
+    const toolName = tool.function?.name || tool.name || rawName;
+    toolCalls.push({
+      id: `call_${crypto.randomUUID().slice(0, 8)}`,
+      index: toolCalls.length,
+      type: "function",
+      function: {
+        name: toolName,
+        arguments: JSON.stringify(args),
+      },
+    });
+  }
+  return toolCalls.length ? toolCalls : null;
 };
 
 const pickArgKey = (tool: any, candidates: string[]): string => {
@@ -207,7 +371,10 @@ const convertMessages = (messages: any[], tools: any[]): { role: string; content
   }
   for (const msg of messages) {
     if (msg.role === "tool") {
-      out.push({ role: "user", content: `Tool result (${msg.name || "tool"}):\n${msg.content || ""}` });
+      const rawContent = msg.content ?? "";
+      const content =
+        typeof rawContent === "object" ? JSON.stringify(rawContent) : String(rawContent || "");
+      out.push({ role: "user", content: `Tool result (${msg.name || "tool"}):\n${content}` });
       continue;
     }
     if (msg.role === "assistant" && msg.tool_calls) {
@@ -390,7 +557,17 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
 
   const shouldAttemptTools =
     tools.length > 0 && (toolChoiceRequired || Boolean(inferredToolCall) || hasToolResult);
-  const glmMessages = convertMessages(messages, shouldAttemptTools ? tools : []);
+  let glmMessages = convertMessages(messages, shouldAttemptTools ? tools : []);
+  if (hasToolResult && shouldAttemptTools) {
+    glmMessages = [
+      {
+        role: "system",
+        content:
+          "Use the tool results to answer the user. If no further tools are needed, return a final response.",
+      },
+      ...glmMessages,
+    ];
+  }
 
   if (shouldAttemptTools) {
     const earlyFallback = inferredToolCall;
@@ -436,6 +613,18 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
     }
 
     if (!parsed.ok || !parsed.data) {
+      const rawToolCalls = parseRawToolCalls(responseText, tools);
+      if (rawToolCalls) {
+        return sendToolCalls(reply, rawToolCalls, model, stream);
+      }
+      if (hasToolResult && responseText.trim()) {
+        if (stream) {
+          reply.raw.writeHead(200, { "Content-Type": "text/event-stream" });
+          reply.raw.write(streamContent(responseText, model));
+          return reply.raw.end();
+        }
+        return reply.send(openaiContentResponse(responseText, model));
+      }
       const fallbackTools =
         inferReadToolCall(tools, lastUser) ||
         inferWriteToolCall(tools, lastUser) ||

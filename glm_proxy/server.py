@@ -113,18 +113,23 @@ def _convert_messages(messages: List[Dict[str, Any]], tools: List[Dict[str, Any]
         if role == "tool":
             name = msg.get("name", "tool")
             content = msg.get("content", "")
+            if isinstance(content, (dict, list)):
+                content = json.dumps(content, ensure_ascii=False)
             out.append({"role": "user", "content": f"Tool result ({name}):\n{content}"})
             continue
         if role == "assistant" and msg.get("tool_calls"):
-            # Preserve prior tool call context
-            out.append({"role": "assistant", "content": json.dumps(msg.get("tool_calls"))})
+            # Preserve prior tool call context (use lightweight hint when tools are disabled)
+            if tools:
+                out.append({"role": "assistant", "content": json.dumps(msg.get("tool_calls"), ensure_ascii=False)})
+            else:
+                out.append({"role": "assistant", "content": "Assistant invoked tools."})
             continue
         content = msg.get("content", "") or ""
         out.append({"role": role, "content": content})
     return out
 
 
-def _repair_json(raw: str) -> Optional[Dict[str, Any]]:
+def _repair_json(raw: str) -> Optional[Any]:
     raw = raw.strip()
     if raw.startswith("```"):
         raw = raw.strip("`\n ")
@@ -135,21 +140,30 @@ def _repair_json(raw: str) -> Optional[Dict[str, Any]]:
     except Exception:
         pass
 
+    def _try_parse_snippet(snippet: str) -> Optional[Any]:
+        try:
+            return json.loads(snippet)
+        except Exception:
+            repaired = snippet.replace("'", "\"")
+            repaired = repaired.replace(",}", "}").replace(",]", "]")
+            try:
+                return json.loads(repaired)
+            except Exception:
+                return None
+
+    # Prefer arrays when present (common for tool call lists)
+    start = raw.find("[")
+    end = raw.rfind("]")
+    if start != -1 and end != -1 and end > start:
+        parsed = _try_parse_snippet(raw[start:end + 1])
+        if parsed is not None:
+            return parsed
+
     start = raw.find("{")
     end = raw.rfind("}")
     if start == -1 or end == -1 or end <= start:
         return None
-    snippet = raw[start:end + 1]
-    try:
-        return json.loads(snippet)
-    except Exception:
-        # very small repair: single quotes to double, trailing commas
-        repaired = snippet.replace("'", "\"")
-        repaired = repaired.replace(",}", "}").replace(",]", "]")
-        try:
-            return json.loads(repaired)
-        except Exception:
-            return None
+    return _try_parse_snippet(raw[start:end + 1])
 
 
 _ARG_SYNONYMS = {
@@ -258,6 +272,26 @@ def _normalize_tool_calls(
     return normalized or None
 
 
+def _coerce_tool_calls(raw_calls: List[Any]) -> List[Dict[str, Any]]:
+    coerced: List[Dict[str, Any]] = []
+    for call in raw_calls:
+        if not isinstance(call, dict):
+            continue
+        if "name" in call and "arguments" in call:
+            coerced.append({"name": call.get("name"), "arguments": call.get("arguments", {})})
+            continue
+        func = call.get("function")
+        if isinstance(func, dict):
+            coerced.append(
+                {
+                    "name": func.get("name") or call.get("name"),
+                    "arguments": func.get("arguments", {}),
+                }
+            )
+            continue
+    return coerced
+
+
 def _extract_tool_call(
     text: str,
     allowed_tools: List[str],
@@ -269,8 +303,23 @@ def _extract_tool_call(
     if not data:
         return None
 
+    if isinstance(data, list):
+        coerced = _coerce_tool_calls(data)
+        normalized = _normalize_tool_calls(coerced, allowed_tools, tool_params_by_name)
+        if normalized:
+            return {"tool_calls": normalized}
+        return None
+
+    if isinstance(data, dict) and "function" in data and "tool_calls" not in data and "tool" not in data:
+        coerced = _coerce_tool_calls([data])
+        normalized = _normalize_tool_calls(coerced, allowed_tools, tool_params_by_name)
+        if normalized:
+            return {"tool_calls": normalized}
+        return None
+
     if "tool_calls" in data and isinstance(data["tool_calls"], list):
-        normalized = _normalize_tool_calls(data["tool_calls"], allowed_tools, tool_params_by_name)
+        coerced = _coerce_tool_calls(data["tool_calls"])
+        normalized = _normalize_tool_calls(coerced, allowed_tools, tool_params_by_name)
         if normalized:
             return {"tool_calls": normalized}
         return None
@@ -714,11 +763,20 @@ async def chat_completions(request: Request):
 
     # If last message is a tool result, disable tools for the final response
     last_role = messages[-1].get("role") if messages else None
+    post_tool_response = False
     if last_role in ("tool", "function") or (messages and messages[-1].get("tool_call_id")):
         tools = []
         tool_choice = "none"
+        post_tool_response = True
 
     glm_messages = _convert_messages(messages, tools)
+    if post_tool_response:
+        glm_messages = [
+            {
+                "role": "system",
+                "content": "Use the tool results above to answer the user. Provide a final response and do not call tools.",
+            }
+        ] + glm_messages
 
     last_user = ""
     last_user_raw = ""
