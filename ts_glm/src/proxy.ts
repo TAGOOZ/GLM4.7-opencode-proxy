@@ -1057,6 +1057,7 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
   const toolRegistry = buildToolRegistry(tools);
   const bodyFeatures = body?.features && typeof body.features === "object" ? body.features : {};
   const featureOverrides: Record<string, unknown> = { ...bodyFeatures };
+  const allowWebSearch = process.env.PROXY_ALLOW_WEB_SEARCH === "1";
   const enableThinking =
     typeof body?.enable_thinking === "boolean"
       ? body.enable_thinking
@@ -1072,6 +1073,12 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
   }
   if (typeof body?.auto_web_search === "boolean") {
     featureOverrides.auto_web_search = body.auto_web_search;
+  }
+  if (!allowWebSearch) {
+    featureOverrides.web_search = false;
+    featureOverrides.auto_web_search = false;
+  } else if (featureOverrides.web_search === true && featureOverrides.auto_web_search === undefined) {
+    featureOverrides.auto_web_search = true;
   }
   const loweredUser = lastUser.toLowerCase();
   const hasEmbeddedRead = /Called the Read tool with the following input/i.test(lastUser);

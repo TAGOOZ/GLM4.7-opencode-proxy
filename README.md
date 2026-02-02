@@ -1,4 +1,4 @@
-# GLM4.7 CLI Tool
+# GLM 4.7 CLI Tool
 
 A command-line interface for interacting with the GLM4.7 API at [chat.z.ai](https://chat.z.ai).
 
@@ -63,6 +63,37 @@ If Chrome/Chromium is not on your PATH, pass a binary explicitly:
 
 ```bash
 npm --prefix ts_glm run start:cli -- login --chrome-bin /opt/google/chrome/chrome
+```
+
+## Thinking and Web Search Flags (TypeScript Proxy)
+
+The proxy accepts GLM flags for thinking and web search. You can pass them in the request body as either top-level fields or under `features`.
+
+Enable thinking:
+
+```json
+{
+  "model": "glm-4.7",
+  "messages": [{"role":"user","content":"Explain this"}],
+  "enable_thinking": true
+}
+```
+
+Enable web search (when allowed):
+
+```json
+{
+  "model": "glm-4.7",
+  "messages": [{"role":"user","content":"Latest news on X"}],
+  "web_search": true,
+  "auto_web_search": true
+}
+```
+
+To allow web search through the proxy, set:
+
+```bash
+export PROXY_ALLOW_WEB_SEARCH=1
 ```
 
 ## Quick Start (Token)
