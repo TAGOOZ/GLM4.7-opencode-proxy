@@ -317,6 +317,9 @@ def _extract_tool_call(
             return {"tool_calls": normalized}
         return None
 
+    if not isinstance(data, dict):
+        return None
+
     if "tool_calls" in data and isinstance(data["tool_calls"], list):
         coerced = _coerce_tool_calls(data["tool_calls"])
         normalized = _normalize_tool_calls(coerced, allowed_tools, tool_params_by_name)
