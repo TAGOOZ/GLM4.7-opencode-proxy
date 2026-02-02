@@ -9,7 +9,7 @@ This document provides guidance on using the OpenCode CLI with the GLM 4.7 proxy
 npm install -g @opencode-ai/opencode
 ```
 
-2. Start the GLM proxy server:
+2. Start the GLM proxy server (TypeScript is recommended; Python is legacy):
 ```bash
 # TypeScript proxy
 cd ts_glm
