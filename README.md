@@ -214,7 +214,7 @@ npm --prefix ts_glm run start:cli -- whoami
 
 - **Streaming responses** - See responses as they're generated
 - **Thinking mode** - View the model's reasoning process (separate OpenCode thinking panel)
-- **Interactive mode** - REPL-style conversation
+- **Interactive mode** - REPL-style conversation (`npm --prefix ts_glm run start:cli -- interactive`)
 - **Rich terminal output** - Beautiful formatting with colors
 
 ## Configuration
