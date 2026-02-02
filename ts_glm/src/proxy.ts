@@ -419,6 +419,17 @@ const parseRawToolCalls = (raw: string, registry: Map<string, ToolInfo>) => {
   return toolCalls.length ? toolCalls : null;
 };
 
+const tryParseModelOutput = (raw: string, allowRelaxed: boolean) => {
+  let parsed = parseModelOutput(raw, true);
+  if (!parsed.ok && allowRelaxed) {
+    const relaxed = parseModelOutput(raw, false);
+    if (relaxed.ok) {
+      parsed = relaxed;
+    }
+  }
+  return parsed;
+};
+
 const extractCommand = (text: string): string | null => {
   const fence = text.match(/```(?:bash|sh)?\n([\s\S]+?)```/i);
   if (fence && fence[1]) {
@@ -936,17 +947,12 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
     }
 
     let responseText = await collectGlmResponse(chatId, glmMessages);
+    const initialResponseText = responseText;
     if (process.env.PROXY_DEBUG) {
       const preview = responseText.length > 400 ? `${responseText.slice(0, 400)}…` : responseText;
       console.log("proxy_debug model_raw:", preview);
     }
-    let parsed = parseModelOutput(responseText, true);
-    if (!parsed.ok) {
-      const relaxed = parseModelOutput(responseText, false);
-      if (relaxed.ok) {
-        parsed = relaxed;
-      }
-    }
+    let parsed = tryParseModelOutput(responseText, false);
     if (!parsed.ok) {
       // one retry with corrective message
       const corrective = {
@@ -958,13 +964,7 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
         const preview = responseText.length > 400 ? `${responseText.slice(0, 400)}…` : responseText;
         console.log("proxy_debug model_retry_raw:", preview);
       }
-      parsed = parseModelOutput(responseText, true);
-      if (!parsed.ok) {
-        const relaxed = parseModelOutput(responseText, false);
-        if (relaxed.ok) {
-          parsed = relaxed;
-        }
-      }
+      parsed = tryParseModelOutput(responseText, false);
     }
 
     if (!parsed.ok) {
@@ -977,12 +977,13 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
         const preview = responseText.length > 400 ? `${responseText.slice(0, 400)}…` : responseText;
         console.log("proxy_debug model_retry2_raw:", preview);
       }
-      parsed = parseModelOutput(responseText, true);
-      if (!parsed.ok) {
-        const relaxed = parseModelOutput(responseText, false);
-        if (relaxed.ok) {
-          parsed = relaxed;
-        }
+      parsed = tryParseModelOutput(responseText, false);
+    }
+
+    if (!parsed.ok) {
+      parsed = tryParseModelOutput(responseText, true);
+      if (!parsed.ok && responseText !== initialResponseText) {
+        parsed = tryParseModelOutput(initialResponseText, true);
       }
     }
 
