@@ -428,7 +428,7 @@ const extractCommand = (text: string): string | null => {
   if (inline && inline[1]) {
     return inline[1].trim();
   }
-  const runMatch = text.match(/\b(?:run|execute)\s*[:\-]?\s*([^\n]+)$/i);
+  const runMatch = text.match(/(?:^|\n)\s*\b(?:run|execute)\s*[:\-]?\s*(.+)$/im);
   if (runMatch && runMatch[1]) {
     return runMatch[1].trim();
   }
@@ -436,9 +436,30 @@ const extractCommand = (text: string): string | null => {
 };
 
 const extractQuotedText = (text: string): string | null => {
-  const match = text.match(/`([^`]+)`|"([^"]+)"|'([^']+)'/);
-  if (!match) return null;
-  return (match[1] || match[2] || match[3] || "").trim() || null;
+  const matches = [...text.matchAll(/`([^`]+)`|"([^"]+)"|'([^']+)'/g)];
+  if (!matches.length) return null;
+  const candidates = matches
+    .map((match) => (match[1] || match[2] || match[3] || "").trim())
+    .filter(Boolean);
+  if (!candidates.length) return null;
+  const nonPath = candidates.find((value) => !looksLikePath(value));
+  return nonPath || candidates[0] || null;
+};
+
+const stripOuterQuotes = (value: string): string => {
+  if (
+    (value.startsWith("\"") && value.endsWith("\"")) ||
+    (value.startsWith("'") && value.endsWith("'")) ||
+    (value.startsWith("`") && value.endsWith("`"))
+  ) {
+    return value.slice(1, -1);
+  }
+  return value;
+};
+
+const shellEscape = (value: string): string => {
+  if (value.length === 0) return "''";
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 };
 
 const pickArgKey = (toolInfo: ToolInfo | null, candidates: string[]): string => {
@@ -476,12 +497,13 @@ const extractFilePath = (text: string): string | null => {
   }
   const tokens = normalized.split(/\s+/).map((t) => t.replace(/[.,:;!?)]$/, ""));
   const token = tokens.find((t) => /\.[A-Za-z0-9]{1,10}$/.test(t));
-  return token || null;
+  if (token) return token;
+  const pathToken = tokens.find((t) => /[\\/]/.test(t) || t.startsWith("~") || t.startsWith("."));
+  return pathToken || null;
 };
 
 const looksLikePath = (value: string | null): boolean => {
   if (!value) return false;
-  if (/\s/.test(value)) return false;
   if (value.startsWith("~") || value.startsWith(".") || value.includes("/") || value.includes("\\")) return true;
   if (/\.[A-Za-z0-9]{1,10}$/.test(value)) return true;
   return false;
@@ -562,7 +584,13 @@ const inferRunToolCall = (registry: Map<string, ToolInfo>, userText: string) => 
   const toolInfo = findTool(registry, "run") || findTool(registry, "run_shell");
   if (!toolInfo) return null;
   const command = extractCommand(userText);
-  let inferred = command;
+  let inferred: string | null = null;
+  if (command) {
+    const loweredCmd = command.toLowerCase().trim();
+    if (!/^(rg|ripgrep|grep|rm|mkdir|mv)\b/.test(loweredCmd)) {
+      inferred = command;
+    }
+  }
   if (!inferred) {
     const lowered = userText.toLowerCase();
     if (/\b(rg|ripgrep|grep)\b/.test(lowered)) {
@@ -570,31 +598,41 @@ const inferRunToolCall = (registry: Map<string, ToolInfo>, userText: string) => 
       if (pattern) {
         const target = extractFilePath(userText);
         const path = target && looksLikePath(target) ? target : ".";
-        const safePattern = pattern.replace(/"/g, "\\\"");
+        const safePattern = shellEscape(pattern);
+        const safePath = shellEscape(path);
         inferred = /\bgrep\b/.test(lowered)
-          ? `grep -R \"${safePattern}\" ${path}`
-          : `rg -n \"${safePattern}\" ${path}`;
+          ? `grep -R ${safePattern} ${safePath}`
+          : `rg -n ${safePattern} ${safePath}`;
       }
     }
     if (!inferred && /\b(delete|remove)\b/.test(lowered)) {
       const target = extractFilePath(userText);
       if (target && looksLikePath(target)) {
         const isDir = /\b(directory|folder)\b/.test(lowered);
-        inferred = isDir ? `rm -rf ${target}` : `rm -f ${target}`;
+        const safeTarget = shellEscape(target);
+        inferred = isDir ? `rm -rf ${safeTarget}` : `rm -f ${safeTarget}`;
       }
     }
     if (!inferred) {
-      const mkdirMatch = userText.match(/(?:create|make)\s+(?:a\s+)?(?:directory|folder)\s+([^\s]+)/i);
-      if (mkdirMatch && mkdirMatch[1]) {
-        inferred = `mkdir -p ${mkdirMatch[1].replace(/[.,:;!?)]$/, "")}`;
+      const mkdirMatch = userText.match(
+        /(?:create|make)\s+(?:a\s+)?(?:directory|folder)\s+(?:\"([^\"]+)\"|'([^']+)'|`([^`]+)`|([^\s]+))/i
+      );
+      if (mkdirMatch) {
+        const raw = (mkdirMatch[1] || mkdirMatch[2] || mkdirMatch[3] || mkdirMatch[4] || "").trim();
+        if (raw) {
+          const dirName = stripOuterQuotes(raw).replace(/[.,:;!?)]$/, "");
+          inferred = `mkdir -p ${shellEscape(dirName)}`;
+        }
       }
     }
     if (!inferred) {
-      const mvMatch = userText.match(/(?:rename|move)\s+([^\s]+)\s+(?:to|as)\s+([^\s]+)/i);
+      const mvMatch = userText.match(
+        /(?:rename|move)\s+((?:\"[^\"]+\"|'[^']+'|`[^`]+`|[^\s]+))\s+(?:to|as)\s+((?:\"[^\"]+\"|'[^']+'|`[^`]+`|[^\s]+))/i
+      );
       if (mvMatch && mvMatch[1] && mvMatch[2]) {
-        const src = mvMatch[1].replace(/[.,:;!?)]$/, "");
-        const dst = mvMatch[2].replace(/[.,:;!?)]$/, "");
-        inferred = `mv ${src} ${dst}`;
+        const src = stripOuterQuotes(mvMatch[1]).replace(/[.,:;!?)]$/, "");
+        const dst = stripOuterQuotes(mvMatch[2]).replace(/[.,:;!?)]$/, "");
+        inferred = `mv ${shellEscape(src)} ${shellEscape(dst)}`;
       }
     }
   }
