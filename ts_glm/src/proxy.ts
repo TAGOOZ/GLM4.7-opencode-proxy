@@ -775,7 +775,10 @@ const inferSearchCommand = (userText: string): string | null => {
   const target = stripOuterQuotes(match[2].trim()).replace(/[.,:;!?)]$/, "") || ".";
   const safePattern = shellEscape(pattern);
   const safePath = shellEscape(target);
-  return `rg -n ${safePattern} ${safePath}`;
+  if (/\b(rg|ripgrep)\b/i.test(userText)) {
+    return `rg -n ${safePattern} ${safePath}`;
+  }
+  return `grep -R -n ${safePattern} ${safePath}`;
 };
 
 const inferDeleteCommand = (userText: string): string | null => {
