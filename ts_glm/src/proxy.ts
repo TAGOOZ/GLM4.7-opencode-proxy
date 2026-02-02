@@ -327,6 +327,15 @@ const normalizeArgsForTool = (toolInfo: ToolInfo | null, args: Record<string, un
       normalized.description = normalized.description ?? `run shell command: ${command.trim()}`;
     }
   }
+  if (toolInfo) {
+    const toolName = toolInfo.tool.function?.name || toolInfo.tool.name || "";
+    if (/webfetch/i.test(toolName)) {
+      const format = String((normalized.format as string | undefined) ?? "").toLowerCase();
+      if (!format || !["text", "markdown", "html"].includes(format)) {
+        normalized.format = "text";
+      }
+    }
+  }
   return normalized;
 };
 
@@ -1134,12 +1143,15 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
           ? (bodyFeatures as { enable_thinking: boolean }).enable_thinking
           : typeof (bodyFeatures as { enableThinking?: unknown }).enableThinking === "boolean"
             ? (bodyFeatures as { enableThinking: boolean }).enableThinking
-            : false;
+            : true;
   if (typeof directiveResult.overrides.enable_thinking === "boolean") {
     featureOverrides.enable_thinking = directiveResult.overrides.enable_thinking;
   }
   if (typeof directiveResult.overrides.web_search === "boolean") {
     featureOverrides.web_search = directiveResult.overrides.web_search;
+    if (featureOverrides.web_search === true && featureOverrides.auto_web_search === undefined) {
+      featureOverrides.auto_web_search = true;
+    }
   }
   if (typeof directiveResult.overrides.auto_web_search === "boolean") {
     featureOverrides.auto_web_search = directiveResult.overrides.auto_web_search;
@@ -1150,6 +1162,9 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
       : enableThinking;
   if (typeof body?.web_search === "boolean") {
     featureOverrides.web_search = body.web_search;
+    if (featureOverrides.web_search === true && featureOverrides.auto_web_search === undefined) {
+      featureOverrides.auto_web_search = true;
+    }
   }
   if (typeof body?.auto_web_search === "boolean") {
     featureOverrides.auto_web_search = body.auto_web_search;

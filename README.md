@@ -69,7 +69,7 @@ npm --prefix ts_glm run start:cli -- login --chrome-bin /opt/google/chrome/chrom
 
 The proxy accepts GLM flags for thinking and web search. You can pass them in the request body as either top-level fields or under `features`.
 
-Enable thinking:
+Thinking is enabled by default. You can still toggle it explicitly:
 
 ```json
 {
