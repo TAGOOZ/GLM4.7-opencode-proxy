@@ -622,6 +622,51 @@ const inferWriteToolCall = (registry: Map<string, ToolInfo>, userText: string) =
   return null;
 };
 
+const inferGrepCommand = (userText: string): string | null => {
+  const lowered = userText.toLowerCase();
+  if (!/\b(rg|ripgrep|grep)\b/.test(lowered)) return null;
+  const pattern = extractQuotedText(userText);
+  if (!pattern) return null;
+  const target = extractFilePath(userText);
+  const path = target && looksLikePath(target) ? target : ".";
+  const safePattern = shellEscape(pattern);
+  const safePath = shellEscape(path);
+  return /\bgrep\b/.test(lowered)
+    ? `grep -R ${safePattern} ${safePath}`
+    : `rg -n ${safePattern} ${safePath}`;
+};
+
+const inferDeleteCommand = (userText: string): string | null => {
+  const lowered = userText.toLowerCase();
+  if (!/\b(delete|remove)\b/.test(lowered)) return null;
+  const target = extractFilePath(userText);
+  if (!target || !looksLikePath(target)) return null;
+  const isDir = /\b(directory|folder)\b/.test(lowered);
+  const safeTarget = shellEscape(target);
+  return isDir ? `rm -rf ${safeTarget}` : `rm -f ${safeTarget}`;
+};
+
+const inferMkdirCommand = (userText: string): string | null => {
+  const mkdirMatch = userText.match(
+    /(?:create|make)\s+(?:a\s+)?(?:directory|folder)\s+(?:\"([^\"]+)\"|'([^']+)'|`([^`]+)`|([^\s]+))/i
+  );
+  if (!mkdirMatch) return null;
+  const raw = (mkdirMatch[1] || mkdirMatch[2] || mkdirMatch[3] || mkdirMatch[4] || "").trim();
+  if (!raw) return null;
+  const dirName = stripOuterQuotes(raw).replace(/[.,:;!?)]$/, "");
+  return `mkdir -p ${shellEscape(dirName)}`;
+};
+
+const inferMoveCommand = (userText: string): string | null => {
+  const mvMatch = userText.match(
+    /(?:rename|move)\s+((?:\"[^\"]+\"|'[^']+'|`[^`]+`|[^\s]+))\s+(?:to|as)\s+((?:\"[^\"]+\"|'[^']+'|`[^`]+`|[^\s]+))/i
+  );
+  if (!mvMatch || !mvMatch[1] || !mvMatch[2]) return null;
+  const src = stripOuterQuotes(mvMatch[1]).replace(/[.,:;!?)]$/, "");
+  const dst = stripOuterQuotes(mvMatch[2]).replace(/[.,:;!?)]$/, "");
+  return `mv ${shellEscape(src)} ${shellEscape(dst)}`;
+};
+
 const inferRunToolCall = (registry: Map<string, ToolInfo>, userText: string) => {
   const toolInfo = findTool(registry, "run") || findTool(registry, "run_shell");
   if (!toolInfo) return null;
@@ -638,49 +683,11 @@ const inferRunToolCall = (registry: Map<string, ToolInfo>, userText: string) => 
     }
   }
   if (!inferred) {
-    const lowered = userText.toLowerCase();
-    if (/\b(rg|ripgrep|grep)\b/.test(lowered)) {
-      const pattern = extractQuotedText(userText);
-      if (pattern) {
-        const target = extractFilePath(userText);
-        const path = target && looksLikePath(target) ? target : ".";
-        const safePattern = shellEscape(pattern);
-        const safePath = shellEscape(path);
-        inferred = /\bgrep\b/.test(lowered)
-          ? `grep -R ${safePattern} ${safePath}`
-          : `rg -n ${safePattern} ${safePath}`;
-      }
-    }
-    if (!inferred && /\b(delete|remove)\b/.test(lowered)) {
-      const target = extractFilePath(userText);
-      if (target && looksLikePath(target)) {
-        const isDir = /\b(directory|folder)\b/.test(lowered);
-        const safeTarget = shellEscape(target);
-        inferred = isDir ? `rm -rf ${safeTarget}` : `rm -f ${safeTarget}`;
-      }
-    }
-    if (!inferred) {
-      const mkdirMatch = userText.match(
-        /(?:create|make)\s+(?:a\s+)?(?:directory|folder)\s+(?:\"([^\"]+)\"|'([^']+)'|`([^`]+)`|([^\s]+))/i
-      );
-      if (mkdirMatch) {
-        const raw = (mkdirMatch[1] || mkdirMatch[2] || mkdirMatch[3] || mkdirMatch[4] || "").trim();
-        if (raw) {
-          const dirName = stripOuterQuotes(raw).replace(/[.,:;!?)]$/, "");
-          inferred = `mkdir -p ${shellEscape(dirName)}`;
-        }
-      }
-    }
-    if (!inferred) {
-      const mvMatch = userText.match(
-        /(?:rename|move)\s+((?:\"[^\"]+\"|'[^']+'|`[^`]+`|[^\s]+))\s+(?:to|as)\s+((?:\"[^\"]+\"|'[^']+'|`[^`]+`|[^\s]+))/i
-      );
-      if (mvMatch && mvMatch[1] && mvMatch[2]) {
-        const src = stripOuterQuotes(mvMatch[1]).replace(/[.,:;!?)]$/, "");
-        const dst = stripOuterQuotes(mvMatch[2]).replace(/[.,:;!?)]$/, "");
-        inferred = `mv ${shellEscape(src)} ${shellEscape(dst)}`;
-      }
-    }
+    inferred =
+      inferGrepCommand(userText) ||
+      inferDeleteCommand(userText) ||
+      inferMkdirCommand(userText) ||
+      inferMoveCommand(userText);
   }
   if (!inferred) return null;
   const key = pickArgKey(toolInfo, ["command", "cmd"]);
