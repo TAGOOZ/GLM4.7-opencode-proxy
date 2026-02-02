@@ -15,9 +15,9 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## TypeScript (No Python)
+## TypeScript (Primary)
 
-If you want to run everything in TypeScript (no Python bridge):
+The TypeScript proxy/CLI is the main, actively developed path. The Python proxy was the initial MVP and is kept for compatibility.
 
 ```bash
 cd GLM4.7-opencode-proxy
