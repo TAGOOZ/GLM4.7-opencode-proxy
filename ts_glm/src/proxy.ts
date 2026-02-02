@@ -745,18 +745,19 @@ const openaiContentResponse = (content: string, model: string) => ({
 
 const streamContent = (content: string, model: string) => {
   const id = `chatcmpl-${crypto.randomUUID().slice(0, 8)}`;
+  const created = Math.floor(Date.now() / 1000);
   return [
     `data: ${JSON.stringify({
       id,
       object: "chat.completion.chunk",
-      created: Math.floor(Date.now() / 1000),
+      created,
       model,
       choices: [{ index: 0, delta: { role: "assistant", content }, finish_reason: null }],
     })}\n\n`,
     `data: ${JSON.stringify({
       id,
       object: "chat.completion.chunk",
-      created: Math.floor(Date.now() / 1000),
+      created,
       model,
       choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
     })}\n\n`,
