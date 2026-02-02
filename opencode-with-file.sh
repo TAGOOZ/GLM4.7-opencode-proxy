@@ -26,23 +26,47 @@ MODEL="glm-local/glm-4.7"
 FILE=""
 SESSION=""
 MESSAGE=""
+ARG_MAX=$(getconf ARG_MAX 2>/dev/null || echo "")
+PROMPT_MAX=""
+
+if [ -n "$ARG_MAX" ]; then
+  # Leave headroom for environment and other args; cap to ~50% of ARG_MAX
+  PROMPT_MAX=$((ARG_MAX / 2))
+else
+  # Conservative fallback to avoid ARG_MAX errors on some systems
+  PROMPT_MAX=$((256 * 1024))
+fi
+
+require_arg() {
+  local opt="$1"
+  local val="$2"
+  if [ -z "$val" ] || [[ "$val" == -* ]]; then
+    echo "Error: $opt requires an argument." >&2
+    echo "$USAGE" >&2
+    exit 1
+  fi
+}
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
   case $1 in
     --format)
+      require_arg --format "$2"
       FORMAT="$2"
       shift 2
       ;;
     -m)
+      require_arg -m "$2"
       MODEL="$2"
       shift 2
       ;;
     -f)
+      require_arg -f "$2"
       FILE="$2"
       shift 2
       ;;
     --session)
+      require_arg --session "$2"
       SESSION="$2"
       shift 2
       ;;
@@ -85,16 +109,8 @@ if [ -n "$FILE" ]; then
     echo "Warning: Could not determine file size for $FILE. Proceeding without size check." >&2
   else
     MAX_SIZE=$((1024 * 1024))  # 1MB default
-    ARG_MAX=$(getconf ARG_MAX 2>/dev/null || echo "")
-    if [ -n "$ARG_MAX" ]; then
-      # Leave headroom for environment and other args; cap to ~50% of ARG_MAX
-      SAFE_MAX=$((ARG_MAX / 2))
-      if [ "$SAFE_MAX" -gt 0 ] && [ "$SAFE_MAX" -lt "$MAX_SIZE" ]; then
-        MAX_SIZE="$SAFE_MAX"
-      fi
-    else
-      # Conservative fallback to avoid ARG_MAX errors on some systems
-      MAX_SIZE=$((256 * 1024))
+    if [ "$PROMPT_MAX" -gt 0 ] && [ "$PROMPT_MAX" -lt "$MAX_SIZE" ]; then
+      MAX_SIZE="$PROMPT_MAX"
     fi
     if [ "$FILE_SIZE" -gt "$MAX_SIZE" ]; then
       FILE_SIZE_KB=$((FILE_SIZE / 1024))
@@ -109,21 +125,15 @@ fi
 if [ -n "$FILE" ]; then
   FILENAME=$(basename "$FILE")
   CONTENT=$(cat "$FILE")
-  FULL_PROMPT="Attached file: $FILENAME
-
-\`\`\`
-$CONTENT
-\`\`\`
-
-$MESSAGE"
+  FULL_PROMPT=$(printf 'Attached file: %s\n\n```\n%s\n```\n\n%s' "$FILENAME" "$CONTENT" "$MESSAGE")
 else
   FULL_PROMPT="$MESSAGE"
 fi
 
 # Final guard against argument length limits
-if [ -n "$ARG_MAX" ]; then
+if [ -n "$PROMPT_MAX" ]; then
   FULL_LEN=${#FULL_PROMPT}
-  if [ "$FULL_LEN" -gt "$MAX_SIZE" ]; then
+  if [ "$FULL_LEN" -gt "$PROMPT_MAX" ]; then
     echo "Error: Prompt too large for CLI invocation (${FULL_LEN} bytes). Try a smaller file or use the API option in OPENCODE_USAGE.md." >&2
     exit 1
   fi

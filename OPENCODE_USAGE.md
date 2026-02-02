@@ -75,7 +75,7 @@ curl -X POST http://127.0.0.1:8787/v1/chat/completions \
     "messages": [
       {
         "role": "user", 
-        "content": "Using the attached file content, provide a 2-sentence summary:\n\n'"$(cat sample.md)"'"
+        "content": "Using the attached file content, provide a 2-sentence summary:\n\n'"$(cat examples/sample.md)"'"
       }
     ]
   }'

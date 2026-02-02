@@ -16,7 +16,7 @@ The document contains:
 ## Use Cases
 
 1. **Summarization**: Ask the model to summarize this document
-2. **Analysis**: Request insights about the document structure  
+2. **Analysis**: Request insights about the document structure
 3. **Improvements**: Get suggestions for enhancing the content
 4. **Q&A**: Ask questions about the document content
 
