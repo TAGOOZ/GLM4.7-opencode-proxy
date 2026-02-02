@@ -256,6 +256,7 @@ const buildToolRegistry = (tools: ToolLike[]): Map<string, ToolInfo> => {
       }
     }
     if (!info) continue;
+    // Alias expansion intentionally maps the same tool under multiple normalized names.
     for (const name of allNames) {
       const normalized = normalizeToolName(name);
       if (!registry.has(normalized)) {
