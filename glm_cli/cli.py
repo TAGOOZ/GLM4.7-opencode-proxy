@@ -1,11 +1,8 @@
 """CLI interface for GLM4.7 API"""
 
-import base64
 import json
-import os
 import sys
 import time
-from pathlib import Path
 from typing import Optional
 
 import click
@@ -17,46 +14,10 @@ from rich.text import Text
 from rich.table import Table
 
 from .api_client import GLMClient
-
-
-# Config file location
-CONFIG_DIR = Path.home() / ".config" / "glm-cli"
-CONFIG_FILE = CONFIG_DIR / "config.json"
+from .config_utils import CONFIG_DIR, load_config, load_token, save_config
+from .jwt_utils import decode_jwt_payload
 
 console = Console()
-
-
-def load_config() -> dict:
-    """Load configuration from file"""
-    if CONFIG_FILE.exists():
-        with open(CONFIG_FILE) as f:
-            return json.load(f)
-    return {}
-
-
-def save_config(config: dict):
-    """Save configuration to file"""
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    with open(CONFIG_FILE, 'w') as f:
-        json.dump(config, f, indent=2)
-
-
-def _load_dotenv() -> None:
-    try:
-        from dotenv import load_dotenv
-    except Exception:
-        return
-    load_dotenv()
-    load_dotenv(str(CONFIG_DIR.parent / ".env"))
-
-
-def _decode_jwt_payload(token: str) -> Optional[dict]:
-    try:
-        payload_part = token.split(".")[1]
-        payload_part += "=" * (4 - len(payload_part) % 4)
-        return json.loads(base64.urlsafe_b64decode(payload_part))
-    except Exception:
-        return None
 
 
 def _save_env_token(token: str) -> None:
@@ -104,13 +65,9 @@ def _extract_token_from_page(page) -> Optional[str]:
 
 def get_client() -> GLMClient:
     """Get authenticated client"""
-    _load_dotenv()
-    env_token = os.getenv("GLM_TOKEN")
-    if env_token:
-        return GLMClient(env_token)
-    config = load_config()
-    token = config.get("token")
-    if not token:
+    try:
+        token = load_token()
+    except RuntimeError:
         console.print("[red]Error:[/red] No token configured. Set GLM_TOKEN or run 'glm config --token YOUR_TOKEN' first.")
         sys.exit(1)
     return GLMClient(token)
@@ -415,7 +372,7 @@ def whoami():
     try:
         settings = client.get_user_settings()
         if not settings:
-            payload = _decode_jwt_payload(client.token)
+            payload = decode_jwt_payload(client.token)
             data = payload if payload else {"error": "No settings returned and token decode failed."}
             console.print(Panel.fit(
                 f"[bold]User Settings[/bold]\n\n{json.dumps(data, indent=2)}",

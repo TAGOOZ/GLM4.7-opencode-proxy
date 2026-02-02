@@ -1,0 +1,49 @@
+"""Shared config/env helpers for GLM CLI and proxy."""
+
+import json
+import os
+from pathlib import Path
+from typing import Dict
+
+CONFIG_DIR = Path.home() / ".config" / "glm-cli"
+CONFIG_FILE = CONFIG_DIR / "config.json"
+
+
+def _dotenv_paths() -> list[Path]:
+    repo_root = Path(__file__).resolve().parent.parent
+    return [repo_root / ".env", CONFIG_DIR.parent / ".env"]
+
+
+def load_dotenv() -> None:
+    try:
+        from dotenv import load_dotenv
+    except Exception:
+        return
+    load_dotenv()
+    for path in _dotenv_paths():
+        load_dotenv(str(path))
+
+
+def load_config() -> Dict[str, object]:
+    if CONFIG_FILE.exists():
+        with open(CONFIG_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+def save_config(config: Dict[str, object]) -> None:
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2)
+
+
+def load_token() -> str:
+    load_dotenv()
+    token = os.getenv("GLM_TOKEN")
+    if token:
+        return token
+    config = load_config()
+    token = config.get("token")
+    if not token:
+        raise RuntimeError("Missing GLM token. Run: glm config --token YOUR_TOKEN")
+    return str(token)

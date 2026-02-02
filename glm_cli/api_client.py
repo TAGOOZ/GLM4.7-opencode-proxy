@@ -2,15 +2,18 @@
 
 import json
 import time
-import base64
 import uuid
+import re
 from typing import Optional, Dict, Any, Generator, List
 from datetime import datetime
 from urllib.parse import urlencode
 
 import requests
 
-from .models import Chat, Message, ChatCompletionRequest
+from .models import Chat
+from .jwt_utils import get_user_id_from_token
+
+USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
 
 class GLMClient:
     """Client for interacting with the GLM4.7 API at chat.z.ai"""
@@ -30,7 +33,7 @@ class GLMClient:
             "Accept-Language": "en-US",
             "Authorization": f"Bearer {self.token}",
             "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
+            "User-Agent": USER_AGENT,
             "Origin": self.BASE_URL,
             "Referer": f"{self.BASE_URL}/",
             "sec-ch-ua": '"Not(A:Brand";v="8", "Chromium";v="144", "Google Chrome";v="144"',
@@ -98,7 +101,6 @@ class GLMClient:
         user_id: str
     ) -> Dict[str, str]:
         """Build query parameters for chat completions endpoint"""
-        user_agent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
         now = datetime.now()
         utc_now = datetime.utcnow()
         try:
@@ -113,7 +115,7 @@ class GLMClient:
             "version": "0.0.1",
             "platform": "web",
             "token": self.token,
-            "user_agent": user_agent,
+            "user_agent": USER_AGENT,
             "language": "en-US",
             "languages": "en-US,en",
             "timezone": "UTC",
@@ -248,14 +250,7 @@ class GLMClient:
         prompt = messages[-1]["content"] if messages else ""
         
         # Extract user_id from token (JWT payload)
-        try:
-            payload_part = self.token.split('.')[1]
-            # Add padding if needed
-            payload_part += '=' * (4 - len(payload_part) % 4)
-            decoded = json.loads(base64.urlsafe_b64decode(payload_part))
-            user_id = decoded.get('id', '')
-        except Exception:
-            user_id = ''
+        user_id = get_user_id_from_token(self.token)
 
         # Use manual signature if provided
         if manual_signature:
@@ -293,6 +288,7 @@ class GLMClient:
                 if resolved_parent_id is None:
                     resolved_parent_id = None
         
+        now = datetime.now()
         payload = {
             "stream": stream,
             "model": model,
@@ -311,10 +307,10 @@ class GLMClient:
             "variables": {
                 "{{USER_NAME}}": "CLI User",
                 "{{USER_LOCATION}}": "Unknown",
-                "{{CURRENT_DATETIME}}": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "{{CURRENT_DATE}}": datetime.now().strftime("%Y-%m-%d"),
-                "{{CURRENT_TIME}}": datetime.now().strftime("%H:%M:%S"),
-                "{{CURRENT_WEEKDAY}}": datetime.now().strftime("%A"),
+                "{{CURRENT_DATETIME}}": now.strftime("%Y-%m-%d %H:%M:%S"),
+                "{{CURRENT_DATE}}": now.strftime("%Y-%m-%d"),
+                "{{CURRENT_TIME}}": now.strftime("%H:%M:%S"),
+                "{{CURRENT_WEEKDAY}}": now.strftime("%A"),
                 "{{CURRENT_TIMEZONE}}": "UTC",
                 "{{USER_LANGUAGE}}": "en-US"
             },
@@ -371,8 +367,6 @@ class GLMClient:
                                 content = delta.get("content", "")
                                 if content:
                                     # Check for thinking tags
-                                    import re
-                                    
                                     # Handle <think> with optional attributes
                                     think_match = re.search(r"<think(?: [^>]*)?>", content)
                                     if think_match:
@@ -412,7 +406,6 @@ class GLMClient:
 
                             if content:
                                 # Split on reasoning tags so content after </details> is treated as final
-                                import re
                                 parts = re.split(r"(<details[^>]*>|</details>)", content)
                                 for part in parts:
                                     if not part:

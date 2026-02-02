@@ -65,6 +65,7 @@ class ChatCompletionRequest:
     
     def to_payload(self, current_message_id: str, parent_message_id: Optional[str] = None) -> Dict[str, Any]:
         """Convert to API request payload"""
+        now = datetime.now()
         return {
             "stream": self.stream,
             "model": self.model,
@@ -83,10 +84,10 @@ class ChatCompletionRequest:
             "variables": {
                 "{{USER_NAME}}": "CLI User",
                 "{{USER_LOCATION}}": "Unknown",
-                "{{CURRENT_DATETIME}}": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "{{CURRENT_DATE}}": datetime.now().strftime("%Y-%m-%d"),
-                "{{CURRENT_TIME}}": datetime.now().strftime("%H:%M:%S"),
-                "{{CURRENT_WEEKDAY}}": datetime.now().strftime("%A"),
+                "{{CURRENT_DATETIME}}": now.strftime("%Y-%m-%d %H:%M:%S"),
+                "{{CURRENT_DATE}}": now.strftime("%Y-%m-%d"),
+                "{{CURRENT_TIME}}": now.strftime("%H:%M:%S"),
+                "{{CURRENT_WEEKDAY}}": now.strftime("%A"),
                 "{{CURRENT_TIMEZONE}}": "UTC",
                 "{{USER_LANGUAGE}}": "en-US"
             },

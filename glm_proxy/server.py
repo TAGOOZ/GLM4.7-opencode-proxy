@@ -10,38 +10,13 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from glm_cli.api_client import GLMClient
+from glm_cli.config_utils import load_token
 
 app = FastAPI()
 
 
-def _load_dotenv() -> None:
-    try:
-        from dotenv import load_dotenv
-    except Exception:
-        return
-    # Try repo root first (cwd), then alongside this file
-    load_dotenv()
-    load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
-
-
-def _load_token() -> str:
-    _load_dotenv()
-    token = os.getenv("GLM_TOKEN")
-    if token:
-        return token
-    config_path = os.path.join(os.path.expanduser("~"), ".config", "glm-cli", "config.json")
-    if not os.path.exists(config_path):
-        raise RuntimeError("Missing GLM token. Run: glm config --token YOUR_TOKEN")
-    with open(config_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    token = data.get("token")
-    if not token:
-        raise RuntimeError("Missing GLM token. Run: glm config --token YOUR_TOKEN")
-    return token
-
-
 def _get_client() -> GLMClient:
-    return GLMClient(_load_token())
+    return GLMClient(load_token())
 
 
 _proxy_chat_id: Optional[str] = None
