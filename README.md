@@ -2,20 +2,7 @@
 
 A command-line interface for interacting with the GLM4.7 API at [chat.z.ai](https://chat.z.ai).
 
-## Installation
-
-```bash
-cd GLM4.7-opencode-proxy
-
-# Create and activate virtual environment
-python3 -m venv venv
-source venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
-```
-
-## TypeScript (Primary)
+## Installation (TypeScript, Primary)
 
 The TypeScript proxy/CLI is the main, actively developed path. The Python proxy was the initial MVP and is kept for compatibility.
 
@@ -98,7 +85,7 @@ export GLM_TOKEN="YOUR_TOKEN"
 ### Option B: CLI config
 
 ```bash
-python -m glm_cli.cli config --token "YOUR_TOKEN"
+npm --prefix ts_glm run start:cli -- config --token "YOUR_TOKEN"
 ```
 
 ## Getting Your Token
@@ -110,25 +97,25 @@ python -m glm_cli.cli config --token "YOUR_TOKEN"
 
 Alternatively, check your cookies for the `token` value.
 
-## Usage
+## Usage (TypeScript CLI)
 
 ### Configure Token
 
 ```bash
-python -m glm_cli.cli config --token "YOUR_TOKEN_HERE"
+npm --prefix ts_glm run start:cli -- config --token "YOUR_TOKEN_HERE"
 ```
 
 ### Login (Browser / Google OAuth)
 
 ```bash
-python -m glm_cli.cli login
-python -m glm_cli.cli login --check
+npm --prefix ts_glm run start:cli -- login
+npm --prefix ts_glm run start:cli -- login --check
 ```
 
 If this is your first time using Playwright:
 
 ```bash
-playwright install
+npx playwright install
 ```
 
 This command saves the token to both:
@@ -138,29 +125,29 @@ This command saves the token to both:
 ### List Chats
 
 ```bash
-python -m glm_cli.cli chats
-python -m glm_cli.cli chats --page 2
+npm --prefix ts_glm run start:cli -- chats
+npm --prefix ts_glm run start:cli -- chats --page 2
 ```
 
 ### Create New Chat
 
 ```bash
-python -m glm_cli.cli new
-python -m glm_cli.cli new --title "My Chat" --model glm-4.7
+npm --prefix ts_glm run start:cli -- new
+npm --prefix ts_glm run start:cli -- new --title "My Chat" --model glm-4.7
 ```
 
 ### Send a Message
 
 ```bash
-python -m glm_cli.cli chat CHAT_ID "Hello, how are you?"
-python -m glm_cli.cli chat CHAT_ID "What is Python?" --no-thinking
+npm --prefix ts_glm run start:cli -- chat CHAT_ID "Hello, how are you?"
+npm --prefix ts_glm run start:cli -- chat CHAT_ID "What is Python?" --no-thinking
 ```
 
 ### Interactive Mode
 
 ```bash
-python -m glm_cli.cli interactive
-python -m glm_cli.cli interactive --chat-id EXISTING_CHAT_ID
+npm --prefix ts_glm run start:cli -- interactive
+npm --prefix ts_glm run start:cli -- interactive --chat-id EXISTING_CHAT_ID
 ```
 
 Commands in interactive mode:
@@ -170,7 +157,7 @@ Commands in interactive mode:
 ### Check Current User
 
 ```bash
-python -m glm_cli.cli whoami
+npm --prefix ts_glm run start:cli -- whoami
 ```
 
 ## Available Models
@@ -208,6 +195,31 @@ python3 -m uvicorn glm_proxy.server:app --host 127.0.0.1 --port 8787
 Use `opencode.json` and select provider `glm-local`.
 
 **Note**: For detailed usage instructions, including file attachment workarounds and troubleshooting, see [OPENCODE_USAGE.md](OPENCODE_USAGE.md).
+
+## Python (MVP / Legacy)
+
+The Python CLI/proxy is the original MVP. Use it if you need the older flow.
+
+```bash
+cd GLM4.7-opencode-proxy
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+Python CLI examples:
+
+```bash
+python -m glm_cli.cli config --token "YOUR_TOKEN"
+python -m glm_cli.cli login
+python -m glm_cli.cli chats
+```
+
+Python proxy:
+
+```bash
+python3 -m uvicorn glm_proxy.server:app --host 127.0.0.1 --port 8787
+```
 
 ## License
 
