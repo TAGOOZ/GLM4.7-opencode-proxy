@@ -835,12 +835,13 @@ const inferRunToolCall = (registry: Map<string, ToolInfo>, userText: string) => 
   if (!inferred) return null;
   const key = pickArgKey(toolInfo, ["command", "cmd"]);
   const toolName = toolInfo.tool.function?.name || toolInfo.tool.name || "run_shell";
+  const args = normalizeArgsForTool(toolInfo, { [key]: inferred });
   return [
     {
       id: `call_${crypto.randomUUID().slice(0, 8)}`,
       index: 0,
       type: "function",
-      function: { name: toolName, arguments: JSON.stringify({ [key]: inferred }) },
+      function: { name: toolName, arguments: JSON.stringify(args) },
     },
   ];
 };
