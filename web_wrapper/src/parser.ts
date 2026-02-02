@@ -1,5 +1,6 @@
 import { validateModelOutput } from "./schema.js";
 import type { ModelOutput } from "./types.js";
+import { removeComments, removeTrailingCommas } from "./json.js";
 
 const stripFences = (input: string): string => {
   const trimmed = input.trim();
@@ -7,16 +8,6 @@ const stripFences = (input: string): string => {
     return trimmed.replace(/^```[a-zA-Z]*\n?/, "").replace(/```$/, "").trim();
   }
   return input;
-};
-
-const removeComments = (input: string): string => {
-  return input
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/(^|[^:])\/\/.*$/gm, "$1");
-};
-
-const removeTrailingCommas = (input: string): string => {
-  return input.replace(/,\s*([}\]])/g, "$1");
 };
 
 export const extractFirstJsonObject = (raw: string): { json?: string; error?: string } => {

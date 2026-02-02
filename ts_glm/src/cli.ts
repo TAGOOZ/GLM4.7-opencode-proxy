@@ -2,6 +2,7 @@
 import { Command } from "commander";
 import { loadToken, saveConfig, saveEnvToken, loadConfig } from "./config.js";
 import { GLMClient } from "./glmClient.js";
+import { decodeJwtPayload } from "./token.js";
 import { chromium } from "playwright";
 import fs from "fs";
 import os from "os";
@@ -17,18 +18,6 @@ const getClient = (): GLMClient => {
     process.exit(1);
   }
   return new GLMClient(token);
-};
-
-const decodeJwtPayload = (token: string): Record<string, unknown> | null => {
-  try {
-    const payload = token.split(".")[1] || "";
-    if (!payload) return null;
-    const pad = payload.length % 4 === 0 ? "" : "=".repeat(4 - (payload.length % 4));
-    const decoded = Buffer.from(payload + pad, "base64").toString("utf-8");
-    return JSON.parse(decoded) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
 };
 
 const expandHome = (input: string): string => {

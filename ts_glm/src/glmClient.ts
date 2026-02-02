@@ -1,5 +1,9 @@
 import crypto from "crypto";
 import { getSignatureSync } from "./signature.js";
+import { getUserIdFromToken } from "./token.js";
+
+const USER_AGENT =
+  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36";
 
 export type Chat = {
   id: string;
@@ -28,7 +32,7 @@ export class GLMClient {
       "Accept-Language": "en-US",
       Authorization: `Bearer ${this.token}`,
       "Content-Type": "application/json",
-      "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
+      "User-Agent": USER_AGENT,
       Origin: this.baseUrl,
       Referer: `${this.baseUrl}/`,
       "sec-ch-ua": '"Not(A:Brand";v="8", "Chromium";v="144", "Google Chrome";v="144"',
@@ -36,18 +40,6 @@ export class GLMClient {
       "sec-ch-ua-platform": '"Linux"',
       Cookie: `token=${this.token}`,
     };
-  }
-
-  private decodeUserId(): string {
-    try {
-      const payload = this.token.split(".")[1] || "";
-      const pad = payload.length % 4 === 0 ? "" : "=".repeat(4 - (payload.length % 4));
-      const decoded = Buffer.from(payload + pad, "base64").toString("utf-8");
-      const parsed = JSON.parse(decoded);
-      return parsed.id || "";
-    } catch {
-      return "";
-    }
   }
 
   async getChat(chatId: string): Promise<Record<string, unknown>> {
@@ -146,7 +138,6 @@ export class GLMClient {
 
   private buildCompletionParams(chatId: string, timestamp: number, requestId: string, userId: string) {
     const now = new Date();
-    const utcNow = new Date();
     let tzOffsetMin = 0;
     try {
       tzOffsetMin = -now.getTimezoneOffset();
@@ -161,7 +152,7 @@ export class GLMClient {
       version: "0.0.1",
       platform: "web",
       token: this.token,
-      user_agent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
+      user_agent: USER_AGENT,
       language: "en-US",
       languages: "en-US,en",
       timezone: "UTC",
@@ -184,8 +175,8 @@ export class GLMClient {
       referrer: "https://chat.z.ai/",
       title: "Z.ai Chat - Free AI powered by GLM-4.7 & GLM-4.6",
       timezone_offset: String(tzOffsetMin),
-      local_time: utcNow.toISOString().replace("Z", ".000Z"),
-      utc_time: utcNow.toUTCString(),
+      local_time: now.toISOString().replace("Z", ".000Z"),
+      utc_time: now.toUTCString(),
       is_mobile: "false",
       is_touch: "false",
       max_touch_points: "0",
@@ -209,7 +200,7 @@ export class GLMClient {
   }): AsyncGenerator<StreamChunk> {
     const debugStream = process.env.GLM_DEBUG_STREAM === "1";
     const prompt = options.messages.length ? options.messages[options.messages.length - 1].content : "";
-    const userId = this.decodeUserId();
+    const userId = getUserIdFromToken(this.token);
 
     const sigData = getSignatureSync(prompt, userId);
     if (!sigData.success) {
@@ -253,6 +244,8 @@ export class GLMClient {
       features.enable_thinking = options.enableThinking;
     }
 
+    const now = new Date();
+    const isoNow = now.toISOString();
     const payload = {
       stream: options.stream ?? true,
       model: options.model ?? "glm-4.7",
@@ -264,10 +257,10 @@ export class GLMClient {
       variables: {
         "{{USER_NAME}}": "CLI User",
         "{{USER_LOCATION}}": "Unknown",
-        "{{CURRENT_DATETIME}}": new Date().toISOString().slice(0, 19).replace("T", " "),
-        "{{CURRENT_DATE}}": new Date().toISOString().slice(0, 10),
-        "{{CURRENT_TIME}}": new Date().toISOString().slice(11, 19),
-        "{{CURRENT_WEEKDAY}}": new Date().toLocaleDateString("en-US", { weekday: "long" }),
+        "{{CURRENT_DATETIME}}": isoNow.slice(0, 19).replace("T", " "),
+        "{{CURRENT_DATE}}": isoNow.slice(0, 10),
+        "{{CURRENT_TIME}}": isoNow.slice(11, 19),
+        "{{CURRENT_WEEKDAY}}": now.toLocaleDateString("en-US", { weekday: "long" }),
         "{{CURRENT_TIMEZONE}}": "UTC",
         "{{USER_LANGUAGE}}": "en-US",
       },

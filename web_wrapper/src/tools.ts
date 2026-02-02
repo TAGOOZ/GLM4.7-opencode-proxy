@@ -170,44 +170,23 @@ export const globTool: ToolRunner = {
   }
 };
 
+const OPENCODE_ALIASES: Record<string, string> = {
+  read_file: "read",
+  write_file: "write",
+  list_dir: "list",
+  run_shell: "run",
+};
+
 export const opencodeToolAlias = (runner: ToolRunner): ToolRunner[] => {
-  if (runner.name === "read_file") {
-    return [
-      runner,
-      {
-        name: "read",
-        run: runner.run,
-      }
-    ];
-  }
-  if (runner.name === "write_file") {
-    return [
-      runner,
-      {
-        name: "write",
-        run: runner.run,
-      }
-    ];
-  }
-  if (runner.name === "list_dir") {
-    return [
-      runner,
-      {
-        name: "list",
-        run: runner.run,
-      }
-    ];
-  }
-  if (runner.name === "run_shell") {
-    return [
-      runner,
-      {
-        name: "run",
-        run: runner.run,
-      }
-    ];
-  }
-  return [runner];
+  const alias = OPENCODE_ALIASES[runner.name];
+  if (!alias) return [runner];
+  return [
+    runner,
+    {
+      name: alias,
+      run: runner.run,
+    }
+  ];
 };
 
 export const withOpenCodeAliases = (runners: ToolRunner[]): ToolRunner[] => {

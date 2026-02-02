@@ -8,6 +8,7 @@ import {
   SYSTEM_PROMPT,
   extractFirstJsonObject,
   parseModelOutput,
+  repairPlannerJson,
   validateModelOutput,
   type ModelOutput,
 } from "web-wrapper-protocol";
@@ -99,31 +100,6 @@ const extractContentText = (content: unknown): string => {
     if (typeof text === "string") return text;
   }
   return "";
-};
-
-const removeComments = (input: string): string => {
-  return input
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/(^|[^:])\/\/.*$/gm, "$1");
-};
-
-const removeTrailingCommas = (input: string): string => {
-  return input.replace(/,\s*([}\]])/g, "$1");
-};
-
-const repairPlannerJson = (input: string): string => {
-  let repaired = removeTrailingCommas(removeComments(input));
-  const planMatch = repaired.match(/"plan"\s*:\s*([\s\S]*?)(?=,\s*"actions"\s*:)/);
-  if (planMatch && !planMatch[1].trim().startsWith("[")) {
-    const body = planMatch[1].trim().replace(/,\s*$/, "");
-    repaired = repaired.replace(planMatch[0], `"plan": [${body}]`);
-  }
-  const actionsMatch = repaired.match(/"actions"\s*:\s*([\s\S]*?)(?=,\s*"(final|thought)"\s*:|}$)/);
-  if (actionsMatch && !actionsMatch[1].trim().startsWith("[")) {
-    const body = actionsMatch[1].trim().replace(/,\s*$/, "");
-    repaired = repaired.replace(actionsMatch[0], `"actions": [${body}]`);
-  }
-  return repaired;
 };
 
 const coercePlannerData = (data: any): ModelOutput => {
