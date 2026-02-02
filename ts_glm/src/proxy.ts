@@ -500,6 +500,38 @@ const stripOuterQuotes = (value: string): string => {
   return value;
 };
 
+const extractPatchBlock = (text: string): string | null => {
+  const fenced = text.match(/```(?:diff|patch)?\n([\s\S]+?)```/i);
+  if (fenced && fenced[1]) {
+    const block = fenced[1].trim();
+    if (/^\s*(\*\*\* Begin Patch|diff --git)/m.test(block)) {
+      return block;
+    }
+  }
+  const begin = text.indexOf("*** Begin Patch");
+  const end = text.indexOf("*** End Patch");
+  if (begin !== -1 && end !== -1 && end > begin) {
+    return text.slice(begin, end + "*** End Patch".length).trim();
+  }
+  return null;
+};
+
+const extractDirPath = (text: string): string | null => {
+  const matches = [...text.matchAll(/`([^`]+)`|"([^"]+)"|'([^']+)'/g)];
+  if (matches.length) {
+    let candidate = matches[matches.length - 1].slice(1).find(Boolean) as string | undefined;
+    if (candidate) {
+      candidate = candidate.replace(/[.,:;!?)]$/, "");
+      if (!/\.[A-Za-z0-9]{1,10}$/.test(candidate)) {
+        return candidate;
+      }
+    }
+  }
+  const tokens = text.trim().split(/\s+/).map((t) => t.replace(/[.,:;!?)]$/, ""));
+  const token = tokens.find((t) => (t.includes("/") || t.includes("\\") || t.startsWith("~") || t.startsWith(".")) && !/\.[A-Za-z0-9]{1,10}$/.test(t));
+  return token || null;
+};
+
 const shellEscape = (value: string): string => {
   if (value.length === 0) return "''";
   return `'${value.replace(/'/g, `'\\''`)}'`;
@@ -623,6 +655,26 @@ const inferWriteToolCall = (registry: Map<string, ToolInfo>, userText: string) =
   return null;
 };
 
+const inferApplyPatchToolCall = (registry: Map<string, ToolInfo>, userText: string) => {
+  const patch = extractPatchBlock(userText);
+  if (!patch) return null;
+  const toolInfo =
+    findTool(registry, "apply_patch") ||
+    findTool(registry, "edit") ||
+    findTool(registry, "edit_file");
+  if (!toolInfo) return null;
+  const key = pickArgKey(toolInfo, ["patch", "input", "diff", "changes"]);
+  const toolName = toolInfo.tool.function?.name || toolInfo.tool.name || "apply_patch";
+  return [
+    {
+      id: `call_${crypto.randomUUID().slice(0, 8)}`,
+      index: 0,
+      type: "function",
+      function: { name: toolName, arguments: JSON.stringify({ [key]: patch }) },
+    },
+  ];
+};
+
 const inferGrepCommand = (userText: string): string | null => {
   const lowered = userText.toLowerCase();
   if (!/\b(rg|ripgrep|grep)\b/.test(lowered)) return null;
@@ -635,6 +687,17 @@ const inferGrepCommand = (userText: string): string | null => {
   return /\bgrep\b/.test(lowered)
     ? `grep -R ${safePattern} ${safePath}`
     : `rg -n ${safePattern} ${safePath}`;
+};
+
+const inferSearchCommand = (userText: string): string | null => {
+  const match = userText.match(/\b(?:search for|find)\s+(.+?)\s+in\s+(.+)/i);
+  if (!match) return null;
+  const pattern = stripOuterQuotes(match[1].trim());
+  if (!pattern) return null;
+  const target = stripOuterQuotes(match[2].trim()).replace(/[.,:;!?)]$/, "") || ".";
+  const safePattern = shellEscape(pattern);
+  const safePath = shellEscape(target);
+  return `rg -n ${safePattern} ${safePath}`;
 };
 
 const inferDeleteCommand = (userText: string): string | null => {
@@ -685,6 +748,7 @@ const inferRunToolCall = (registry: Map<string, ToolInfo>, userText: string) => 
   }
   if (!inferred) {
     inferred =
+      inferSearchCommand(userText) ||
       inferGrepCommand(userText) ||
       inferDeleteCommand(userText) ||
       inferMkdirCommand(userText) ||
@@ -706,12 +770,30 @@ const inferRunToolCall = (registry: Map<string, ToolInfo>, userText: string) => 
 const inferListToolCall = (registry: Map<string, ToolInfo>, userText: string) => {
   const lowered = userText.toLowerCase();
   const listIntent = ["list files", "list folders", "list directory", "show files", "inspect files"];
+  const dirIntent = [
+    "directory contents",
+    "folder contents",
+    "contents of",
+    "what is in",
+    "what's in",
+    "read directory",
+    "read dir",
+    "show directory",
+    "show folder",
+  ];
   const hasLsToken = /\bls\b/.test(lowered);
-  if (!hasLsToken && !listIntent.some((k) => lowered.includes(k))) return null;
+  if (!hasLsToken && !listIntent.some((k) => lowered.includes(k)) && !dirIntent.some((k) => lowered.includes(k))) {
+    return null;
+  }
   const toolInfo = findTool(registry, "glob") || findTool(registry, "list");
   if (!toolInfo) return null;
   const key = pickArgKey(toolInfo, ["pattern", "path"]);
-  const args = key === "pattern" ? { [key]: "**/*" } : { [key]: "." };
+  const dirPath = extractDirPath(userText) || ".";
+  const pattern =
+    dirPath === "." || dirPath === "./"
+      ? "**/*"
+      : `${dirPath.replace(/\/$/, "")}/**/*`;
+  const args = key === "pattern" ? { [key]: pattern } : { [key]: dirPath };
   return [
     {
       id: `call_${crypto.randomUUID().slice(0, 8)}`,
@@ -958,7 +1040,8 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
   const allowHeuristicTools = !hasEmbeddedRead;
   const inferredToolCall =
     allowHeuristicTools && !hasToolResult && tools.length > 0
-      ? inferReadToolCall(toolRegistry, lastUser) ||
+      ? inferApplyPatchToolCall(toolRegistry, lastUser) ||
+        inferReadToolCall(toolRegistry, lastUser) ||
         inferWriteToolCall(toolRegistry, lastUser) ||
         inferRunToolCall(toolRegistry, lastUser) ||
         inferListToolCall(toolRegistry, lastUser)
@@ -1070,7 +1153,8 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
         return reply.send(openaiContentResponse(responseText, model));
       }
       const fallbackTools = allowHeuristicTools
-        ? inferReadToolCall(toolRegistry, lastUser) ||
+        ? inferApplyPatchToolCall(toolRegistry, lastUser) ||
+          inferReadToolCall(toolRegistry, lastUser) ||
           inferWriteToolCall(toolRegistry, lastUser) ||
           inferRunToolCall(toolRegistry, lastUser) ||
           inferListToolCall(toolRegistry, lastUser)
@@ -1108,7 +1192,8 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
     if (parsedData.actions.length === 0) {
       if (!hasToolResult) {
         const fallbackTools = allowHeuristicTools
-          ? inferReadToolCall(toolRegistry, lastUser) ||
+          ? inferApplyPatchToolCall(toolRegistry, lastUser) ||
+            inferReadToolCall(toolRegistry, lastUser) ||
             inferWriteToolCall(toolRegistry, lastUser) ||
             inferRunToolCall(toolRegistry, lastUser) ||
             inferListToolCall(toolRegistry, lastUser)
