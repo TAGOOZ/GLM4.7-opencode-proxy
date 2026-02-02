@@ -178,8 +178,21 @@ const tryRepairPlannerOutput = (raw: string): ModelOutput | null => {
   return coerced;
 };
 
+type ToolLike = {
+  name?: string;
+  parameters?: { properties?: Record<string, unknown> };
+  function?: {
+    name?: string;
+    parameters?: { properties?: Record<string, unknown> };
+    tool?: {
+      name?: string;
+      parameters?: { properties?: Record<string, unknown> };
+    };
+  };
+};
+
 type ToolInfo = {
-  tool: any;
+  tool: ToolLike;
   argKeys: string[];
 };
 
@@ -198,7 +211,7 @@ const TOOL_NAME_ALIASES: Record<string, string[]> = {
   run: ["run_shell", "shell", "bash"],
 };
 
-const collectToolNames = (tool: any): string[] => {
+const collectToolNames = (tool: ToolLike): string[] => {
   const names: string[] = [];
   const fn = tool.function || {};
   if (fn.name) names.push(fn.name);
@@ -207,7 +220,7 @@ const collectToolNames = (tool: any): string[] => {
   return names;
 };
 
-const collectArgKeys = (tool: any): string[] => {
+const collectArgKeys = (tool: ToolLike): string[] => {
   const props =
     tool?.function?.parameters?.properties ||
     tool?.parameters?.properties ||
@@ -216,16 +229,20 @@ const collectArgKeys = (tool: any): string[] => {
   return Object.keys(props);
 };
 
-const buildToolRegistry = (tools: any[]): Map<string, ToolInfo> => {
+const buildToolRegistry = (tools: ToolLike[]): Map<string, ToolInfo> => {
   const registry = new Map<string, ToolInfo>();
   for (const tool of tools) {
     const argKeys = collectArgKeys(tool);
     const info: ToolInfo = { tool, argKeys };
     for (const name of collectToolNames(tool)) {
       const normalized = normalizeToolName(name);
-      if (!registry.has(normalized)) {
-        registry.set(normalized, info);
+      if (registry.has(normalized)) {
+        if (process.env.PROXY_DEBUG) {
+          console.warn(`proxy_debug tool_name_collision: ${normalized}`);
+        }
+        continue;
       }
+      registry.set(normalized, info);
     }
   }
   for (const [canonical, aliases] of Object.entries(TOOL_NAME_ALIASES)) {
@@ -253,6 +270,7 @@ const findTool = (registry: Map<string, ToolInfo>, name: string): ToolInfo | nul
   const target = normalizeToolName(name);
   const direct = registry.get(target);
   if (direct) return direct;
+  // Fallback: scan normalized keys for prefix matches. Tool lists are typically small.
   for (const [candidate, info] of registry.entries()) {
     if (isNameMatch(target, candidate)) return info;
   }
@@ -526,7 +544,7 @@ const inferReadToolCall = (registry: Map<string, ToolInfo>, userText: string) =>
   const path = extractFilePath(userText);
   const hasReadIntent = readIntent.some((k) => lowered.includes(k));
   if (!hasReadIntent) return null;
-  const toolInfo = findTool(registry, "read") || findTool(registry, "read_file");
+  const toolInfo = findTool(registry, "read");
   if (!toolInfo) return null;
   if (!path) return null;
   const key = pickArgKey(toolInfo, ["filePath", "path"]);
@@ -542,7 +560,7 @@ const inferReadToolCall = (registry: Map<string, ToolInfo>, userText: string) =>
 };
 
 const inferWriteToolCall = (registry: Map<string, ToolInfo>, userText: string) => {
-  const toolInfo = findTool(registry, "write") || findTool(registry, "write_file");
+  const toolInfo = findTool(registry, "write");
   if (!toolInfo) return null;
   const patterns = [
     /create (?:a )?file\s+([\w./-]+)\s+with content\s+([\s\S]+)/i,
@@ -665,7 +683,7 @@ const inferListToolCall = (registry: Map<string, ToolInfo>, userText: string) =>
   const listIntent = ["list files", "list folders", "list directory", "show files", "inspect files"];
   const hasLsToken = /\bls\b/.test(lowered);
   if (!hasLsToken && !listIntent.some((k) => lowered.includes(k))) return null;
-  const toolInfo = findTool(registry, "glob") || findTool(registry, "list") || findTool(registry, "list_dir");
+  const toolInfo = findTool(registry, "glob") || findTool(registry, "list");
   if (!toolInfo) return null;
   const key = pickArgKey(toolInfo, ["pattern", "path"]);
   const args = key === "pattern" ? { [key]: "**/*" } : { [key]: "." };
