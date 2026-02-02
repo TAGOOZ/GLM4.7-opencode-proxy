@@ -47,6 +47,37 @@ cd ts_glm
 npx playwright install
 ```
 
+### TypeScript CLI Login Notes
+
+If Google blocks the automated browser with a "This browser or app may not be secure" message, the Playwright login flow will not complete. In that case, use a real browser to obtain the token and set it with the CLI:
+
+```bash
+npm --prefix ts_glm run start:cli -- config --token "YOUR_TOKEN"
+```
+
+You can also try launching with a real Chrome channel and a dedicated profile:
+
+```bash
+npm --prefix ts_glm run start:cli -- login --channel chrome
+```
+
+This uses a separate profile directory under `~/.config/glm-cli/` by default.
+
+If Google blocks automated login, the CLI will auto-launch Chrome with remote debugging by default. You can also connect to an already-running Chrome session:
+
+```bash
+google-chrome --user-data-dir=~/.config/glm-cli/chrome-debug --remote-debugging-port=9222
+npm --prefix ts_glm run start:cli -- login --connect-cdp http://127.0.0.1:9222
+```
+
+Log in to chat.z.ai in that browser window, then return to the CLI.
+
+If Chrome/Chromium is not on your PATH, pass a binary explicitly:
+
+```bash
+npm --prefix ts_glm run start:cli -- login --chrome-bin /opt/google/chrome/chrome
+```
+
 ## Quick Start (Token)
 
 Pick one of these:
