@@ -516,6 +516,39 @@ const extractPatchBlock = (text: string): string | null => {
   return null;
 };
 
+const parsePatchForEdit = (patch: string): { filePath: string; oldString: string; newString: string } | null => {
+  const fileMatch =
+    patch.match(/^\*\*\*\s+Update File:\s*(.+)$/m) ||
+    patch.match(/^\+\+\+\s+b\/(.+)$/m) ||
+    patch.match(/^diff --git a\/.+ b\/(.+)$/m);
+  if (!fileMatch) return null;
+  const filePath = fileMatch[1]?.trim();
+  if (!filePath) return null;
+  const lines = patch.split(/\r?\n/);
+  let inHunk = false;
+  const oldLines: string[] = [];
+  const newLines: string[] = [];
+  for (const line of lines) {
+    if (line.startsWith("@@")) {
+      inHunk = true;
+      continue;
+    }
+    if (!inHunk) continue;
+    if (line.startsWith("*** End Patch")) break;
+    if (line.startsWith("---") || line.startsWith("+++")) continue;
+    if (line.startsWith("-")) {
+      oldLines.push(line.slice(1));
+      continue;
+    }
+    if (line.startsWith("+")) {
+      newLines.push(line.slice(1));
+      continue;
+    }
+  }
+  if (!oldLines.length || !newLines.length) return null;
+  return { filePath, oldString: oldLines.join("\n"), newString: newLines.join("\n") };
+};
+
 const extractDirPath = (text: string): string | null => {
   const matches = [...text.matchAll(/`([^`]+)`|"([^"]+)"|'([^']+)'/g)];
   if (matches.length) {
@@ -588,8 +621,14 @@ const inferReadToolCall = (registry: Map<string, ToolInfo>, userText: string) =>
   const lowered = userText.toLowerCase();
   const readIntent = ["read", "open", "show", "cat", "contents", "what is in", "what's in", "display"];
   const path = extractFilePath(userText);
-  const hasReadIntent = readIntent.some((k) => lowered.includes(k));
+  const hasSearchIntent = /\b(search|find)\b/.test(lowered);
+  const hasReadIntent = readIntent.some((k) => lowered.includes(k)) || hasSearchIntent;
+  const hasRunTool = Boolean(findTool(registry, "run") || findTool(registry, "run_shell"));
   if (!hasReadIntent) return null;
+  if (hasSearchIntent && hasRunTool) return null;
+  if (/\b(directory|folder|dir)\b/.test(lowered) && path && !/\.[A-Za-z0-9]{1,10}$/.test(path)) {
+    return null;
+  }
   const toolInfo = findTool(registry, "read");
   if (!toolInfo) return null;
   if (!path) return null;
@@ -658,10 +697,7 @@ const inferWriteToolCall = (registry: Map<string, ToolInfo>, userText: string) =
 const inferApplyPatchToolCall = (registry: Map<string, ToolInfo>, userText: string) => {
   const patch = extractPatchBlock(userText);
   if (!patch) return null;
-  const toolInfo =
-    findTool(registry, "apply_patch") ||
-    findTool(registry, "edit") ||
-    findTool(registry, "edit_file");
+  const toolInfo = findTool(registry, "apply_patch");
   if (!toolInfo) return null;
   const key = pickArgKey(toolInfo, ["patch", "input", "diff", "changes"]);
   const toolName = toolInfo.tool.function?.name || toolInfo.tool.name || "apply_patch";
@@ -671,6 +707,29 @@ const inferApplyPatchToolCall = (registry: Map<string, ToolInfo>, userText: stri
       index: 0,
       type: "function",
       function: { name: toolName, arguments: JSON.stringify({ [key]: patch }) },
+    },
+  ];
+};
+
+const inferEditToolCall = (registry: Map<string, ToolInfo>, userText: string) => {
+  const patch = extractPatchBlock(userText);
+  if (!patch) return null;
+  const toolInfo = findTool(registry, "edit") || findTool(registry, "edit_file");
+  if (!toolInfo) return null;
+  const parsed = parsePatchForEdit(patch);
+  if (!parsed) return null;
+  const toolName = toolInfo.tool.function?.name || toolInfo.tool.name || "edit";
+  const args = {
+    filePath: parsed.filePath,
+    oldString: parsed.oldString,
+    newString: parsed.newString,
+  };
+  return [
+    {
+      id: `call_${crypto.randomUUID().slice(0, 8)}`,
+      index: 0,
+      type: "function",
+      function: { name: toolName, arguments: JSON.stringify(normalizeArgsForTool(toolInfo, args)) },
     },
   ];
 };
@@ -1041,6 +1100,7 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
   const inferredToolCall =
     allowHeuristicTools && !hasToolResult && tools.length > 0
       ? inferApplyPatchToolCall(toolRegistry, lastUser) ||
+        inferEditToolCall(toolRegistry, lastUser) ||
         inferReadToolCall(toolRegistry, lastUser) ||
         inferWriteToolCall(toolRegistry, lastUser) ||
         inferRunToolCall(toolRegistry, lastUser) ||
@@ -1154,6 +1214,7 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
       }
       const fallbackTools = allowHeuristicTools
         ? inferApplyPatchToolCall(toolRegistry, lastUser) ||
+          inferEditToolCall(toolRegistry, lastUser) ||
           inferReadToolCall(toolRegistry, lastUser) ||
           inferWriteToolCall(toolRegistry, lastUser) ||
           inferRunToolCall(toolRegistry, lastUser) ||
@@ -1193,6 +1254,7 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
       if (!hasToolResult) {
         const fallbackTools = allowHeuristicTools
           ? inferApplyPatchToolCall(toolRegistry, lastUser) ||
+            inferEditToolCall(toolRegistry, lastUser) ||
             inferReadToolCall(toolRegistry, lastUser) ||
             inferWriteToolCall(toolRegistry, lastUser) ||
             inferRunToolCall(toolRegistry, lastUser) ||
