@@ -5,9 +5,9 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "start:proxy": "node dist/proxy.js",
+    "start:proxy": "node dist/proxy/index.js",
     "start:cli": "node dist/cli.js",
-    "dev:proxy": "node --loader ts-node/esm src/proxy.ts",
+    "dev:proxy": "node --loader ts-node/esm src/proxy/index.ts",
     "dev:cli": "node --loader ts-node/esm src/cli.ts",
     "test": "echo 'no tests yet'"
   },
