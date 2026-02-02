@@ -527,6 +527,60 @@ const extractPatchBlock = (text: string): string | null => {
   return null;
 };
 
+const parseUserDirectives = (text: string): { cleanedText: string; overrides: Record<string, boolean> } => {
+  const overrides: Record<string, boolean> = {};
+  const lines = text.split(/\r?\n/);
+  const kept: string[] = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const match = trimmed.match(/^\/(thinking|think|search|web|web_search|auto_search|auto-search)\s+(on|off)$/i);
+    if (!match) {
+      kept.push(line);
+      continue;
+    }
+    const key = match[1].toLowerCase();
+    const value = match[2].toLowerCase() === "on";
+    if (key === "thinking" || key === "think") {
+      overrides.enable_thinking = value;
+    } else if (key === "search" || key === "web" || key === "web_search") {
+      overrides.web_search = value;
+    } else if (key === "auto_search" || key === "auto-search") {
+      overrides.auto_web_search = value;
+    }
+  }
+  return { cleanedText: kept.join("\n"), overrides };
+};
+
+const stripDirectivesFromContent = (
+  content: unknown,
+): { content: unknown; cleanedText: string; overrides: Record<string, boolean> } => {
+  const extracted = extractContentText(content);
+  const { cleanedText, overrides } = parseUserDirectives(extracted);
+  if (typeof content === "string") {
+    return { content: cleanedText, cleanedText, overrides };
+  }
+  if (Array.isArray(content)) {
+    let updated = false;
+    const next = content.map((part) => {
+      if (!part || typeof part !== "object") return part;
+      const text = (part as { text?: unknown }).text;
+      if (!updated && typeof text === "string") {
+        updated = true;
+        return { ...part, text: cleanedText };
+      }
+      return part;
+    });
+    return { content: updated ? next : content, cleanedText, overrides };
+  }
+  if (content && typeof content === "object") {
+    const text = (content as { text?: unknown }).text;
+    if (typeof text === "string") {
+      return { content: { ...content, text: cleanedText }, cleanedText, overrides };
+    }
+  }
+  return { content, cleanedText, overrides };
+};
+
 const parsePatchForEdit = (patch: string): { filePath: string; oldString: string; newString: string } | null => {
   const fileMatch =
     patch.match(/^\s*\*\*\*\s+Update File:\s*(.+)$/m) ||
@@ -1048,8 +1102,21 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
 
   const chatId = await ensureChat();
 
-  const lastUserContent = messages.slice().reverse().find((m: any) => m.role === "user")?.content;
-  const lastUser = extractContentText(lastUserContent) || "";
+  const lastUserIndex = (() => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (messages[i]?.role === "user") return i;
+    }
+    return -1;
+  })();
+  const lastUserContent = lastUserIndex >= 0 ? messages[lastUserIndex].content : "";
+  const directiveResult = stripDirectivesFromContent(lastUserContent);
+  const lastUser = directiveResult.cleanedText || "";
+  const sanitizedMessages =
+    lastUserIndex >= 0 && directiveResult.content !== lastUserContent
+      ? messages.map((msg: any, idx: number) =>
+          idx === lastUserIndex ? { ...msg, content: directiveResult.content } : msg
+        )
+      : messages;
   const last = messages[messages.length - 1];
   const hasToolResult = Boolean(last && (last.role === "tool" || last.tool_call_id));
   const toolResultCount = messages.filter((m: any) => m.role === "tool" || m.tool_call_id).length;
@@ -1068,6 +1135,19 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
           : typeof (bodyFeatures as { enableThinking?: unknown }).enableThinking === "boolean"
             ? (bodyFeatures as { enableThinking: boolean }).enableThinking
             : false;
+  if (typeof directiveResult.overrides.enable_thinking === "boolean") {
+    featureOverrides.enable_thinking = directiveResult.overrides.enable_thinking;
+  }
+  if (typeof directiveResult.overrides.web_search === "boolean") {
+    featureOverrides.web_search = directiveResult.overrides.web_search;
+  }
+  if (typeof directiveResult.overrides.auto_web_search === "boolean") {
+    featureOverrides.auto_web_search = directiveResult.overrides.auto_web_search;
+  }
+  const enableThinkingFinal =
+    typeof featureOverrides.enable_thinking === "boolean"
+      ? (featureOverrides.enable_thinking as boolean)
+      : enableThinking;
   if (typeof body?.web_search === "boolean") {
     featureOverrides.web_search = body.web_search;
   }
@@ -1159,7 +1239,7 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
 
   const shouldAttemptTools =
     tools.length > 0 && (toolChoiceRequired || Boolean(inferredToolCall) || hasToolResult || actionable);
-  let glmMessages = convertMessages(messages, shouldAttemptTools ? tools : []);
+  let glmMessages = convertMessages(sanitizedMessages, shouldAttemptTools ? tools : []);
   if (hasToolResult && shouldAttemptTools) {
     glmMessages = [
       {
@@ -1183,7 +1263,7 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
     }
 
     let responseText = await collectGlmResponse(chatId, glmMessages, {
-      enableThinking,
+      enableThinking: enableThinkingFinal,
       features: featureOverrides,
     });
     const initialResponseText = responseText;
@@ -1199,7 +1279,7 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
         content: "Return ONLY valid JSON following the schema. No extra text.",
       };
       responseText = await collectGlmResponse(chatId, [...glmMessages, corrective], {
-        enableThinking,
+        enableThinking: enableThinkingFinal,
         features: featureOverrides,
       });
       if (process.env.PROXY_DEBUG) {
@@ -1215,7 +1295,7 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
         content: "Return ONLY valid JSON object. No markdown. No extra keys.",
       };
       responseText = await collectGlmResponse(chatId, [...glmMessages, stricter], {
-        enableThinking,
+        enableThinking: enableThinkingFinal,
         features: featureOverrides,
       });
       if (process.env.PROXY_DEBUG) {
@@ -1255,7 +1335,7 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
             ...convertMessages(messages, []),
           ];
           const finalText = await collectGlmResponse(chatId, finalMessages, {
-            enableThinking,
+            enableThinking: enableThinkingFinal,
             features: featureOverrides,
           });
           if (stream) {
@@ -1367,7 +1447,7 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
   if (stream) {
     if (tools.length > 0 && !shouldAttemptTools) {
       const fullText = await collectGlmResponse(chatId, glmMessages, {
-        enableThinking,
+        enableThinking: enableThinkingFinal,
         features: featureOverrides,
       });
       const rawToolCalls = parseRawToolCalls(fullText, toolRegistry);
@@ -1389,7 +1469,7 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
       chatId,
       messages: glmMessages,
       includeHistory: false,
-      enableThinking,
+      enableThinking: enableThinkingFinal,
       features: featureOverrides,
       parentMessageId: parentId,
     });

@@ -96,6 +96,18 @@ To allow web search through the proxy, set:
 export PROXY_ALLOW_WEB_SEARCH=1
 ```
 
+### TUI Quick Toggles
+
+In OpenCode TUI (or any client), you can add a directive line to the user prompt to toggle flags:
+
+```
+/thinking on
+/search on
+/auto-search on
+```
+
+These directive lines are stripped before sending content to the model, and only affect the proxy flags.
+
 ## Quick Start (Token)
 
 Pick one of these:
