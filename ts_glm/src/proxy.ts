@@ -308,13 +308,24 @@ const normalizeArgsForTool = (toolInfo: ToolInfo | null, args: Record<string, un
     normalized[key] = value;
   }
   const descKey = allowedNorm.get("description");
+  const command =
+    normalized.command ??
+    normalized.cmd ??
+    args.command ??
+    args.cmd;
   if (descKey && normalized[descKey] == null) {
-    const command = normalized.command ?? normalized.cmd;
     const detail =
       typeof command === "string" && command.trim()
         ? `run shell command: ${command.trim()}`
         : "run shell command";
     normalized[descKey] = detail;
+  }
+  if (!descKey) {
+    const toolName = toolInfo?.tool?.function?.name || toolInfo?.tool?.name || "";
+    const normalizedName = normalizeToolName(toolName);
+    if ((normalizedName === "run" || normalizedName === "runshell" || normalizedName === "bash") && typeof command === "string") {
+      normalized.description = normalized.description ?? `run shell command: ${command.trim()}`;
+    }
   }
   return normalized;
 };
@@ -508,19 +519,19 @@ const extractPatchBlock = (text: string): string | null => {
       return block;
     }
   }
-  const begin = text.indexOf("*** Begin Patch");
-  const end = text.indexOf("*** End Patch");
-  if (begin !== -1 && end !== -1 && end > begin) {
-    return text.slice(begin, end + "*** End Patch".length).trim();
+  const beginMatch = /\*\*\* Begin Patch/.exec(text);
+  const endMatch = /\*\*\* End Patch/.exec(text);
+  if (beginMatch && endMatch && endMatch.index > beginMatch.index) {
+    return text.slice(beginMatch.index, endMatch.index + "*** End Patch".length).trim();
   }
   return null;
 };
 
 const parsePatchForEdit = (patch: string): { filePath: string; oldString: string; newString: string } | null => {
   const fileMatch =
-    patch.match(/^\*\*\*\s+Update File:\s*(.+)$/m) ||
-    patch.match(/^\+\+\+\s+b\/(.+)$/m) ||
-    patch.match(/^diff --git a\/.+ b\/(.+)$/m);
+    patch.match(/^\s*\*\*\*\s+Update File:\s*(.+)$/m) ||
+    patch.match(/^\s*\+\+\+\s+b\/(.+)$/m) ||
+    patch.match(/^\s*diff --git a\/.+ b\/(.+)$/m);
   if (!fileMatch) return null;
   const filePath = fileMatch[1]?.trim();
   if (!filePath) return null;
@@ -529,19 +540,20 @@ const parsePatchForEdit = (patch: string): { filePath: string; oldString: string
   const oldLines: string[] = [];
   const newLines: string[] = [];
   for (const line of lines) {
-    if (line.startsWith("@@")) {
+    const trimmed = line.trimStart();
+    if (trimmed.startsWith("@@")) {
       inHunk = true;
       continue;
     }
     if (!inHunk) continue;
-    if (line.startsWith("*** End Patch")) break;
-    if (line.startsWith("---") || line.startsWith("+++")) continue;
-    if (line.startsWith("-")) {
-      oldLines.push(line.slice(1));
+    if (trimmed.startsWith("*** End Patch")) break;
+    if (trimmed.startsWith("---") || trimmed.startsWith("+++")) continue;
+    if (trimmed.startsWith("-")) {
+      oldLines.push(trimmed.slice(1));
       continue;
     }
-    if (line.startsWith("+")) {
-      newLines.push(line.slice(1));
+    if (trimmed.startsWith("+")) {
+      newLines.push(trimmed.slice(1));
       continue;
     }
   }
@@ -555,13 +567,20 @@ const extractDirPath = (text: string): string | null => {
     let candidate = matches[matches.length - 1].slice(1).find(Boolean) as string | undefined;
     if (candidate) {
       candidate = candidate.replace(/[.,:;!?)]$/, "");
+      if (candidate === "/" || candidate === "\\") {
+        return null;
+      }
       if (!/\.[A-Za-z0-9]{1,10}$/.test(candidate)) {
         return candidate;
       }
     }
   }
   const tokens = text.trim().split(/\s+/).map((t) => t.replace(/[.,:;!?)]$/, ""));
-  const token = tokens.find((t) => (t.includes("/") || t.includes("\\") || t.startsWith("~") || t.startsWith(".")) && !/\.[A-Za-z0-9]{1,10}$/.test(t));
+  const token = tokens.find((t) => {
+    if (t === "/" || t === "\\") return false;
+    const hasPathHint = t.includes("/") || t.includes("\\") || t.startsWith("~") || t.startsWith(".");
+    return hasPathHint && !/\.[A-Za-z0-9]{1,10}$/.test(t);
+  });
   return token || null;
 };
 
