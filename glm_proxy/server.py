@@ -676,19 +676,28 @@ def _collect_glm_response(
     glm_messages: List[Dict[str, str]],
     generation_params: Dict[str, Any],
     parent_message_id: Optional[str] = None,
+    enable_thinking: bool = True,
 ) -> str:
     content_parts: List[str] = []
+    thinking_parts: List[str] = []
     for chunk in client.send_message(
         chat_id=chat_id,
         messages=glm_messages,
-        enable_thinking=False,
+        enable_thinking=enable_thinking,
         include_history=False,
         parent_message_id=parent_message_id,
         generation_params=generation_params,
     ):
         if chunk.get("type") == "content":
             content_parts.append(chunk.get("data", ""))
-    return "".join(content_parts).strip()
+        elif chunk.get("type") == "thinking":
+            thinking_parts.append(chunk.get("data", ""))
+    
+    content = "".join(content_parts).strip()
+    thinking = "".join(thinking_parts).strip()
+    if thinking:
+        return f"<think>\n{thinking}\n</think>\n\n{content}".strip()
+    return content
 
 
 def _stream_glm_response(
@@ -698,18 +707,33 @@ def _stream_glm_response(
     generation_params: Dict[str, Any],
     model: str,
     parent_message_id: Optional[str] = None,
+    enable_thinking: bool = True,
 ) -> Generator[str, None, None]:
     msg_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
     sent_role = False
+    in_thinking = False
     for chunk in client.send_message(
         chat_id=chat_id,
         messages=glm_messages,
-        enable_thinking=False,
+        enable_thinking=enable_thinking,
         include_history=False,
         parent_message_id=parent_message_id,
         generation_params=generation_params,
     ):
+        if chunk.get("type") == "thinking":
+            if not in_thinking:
+                in_thinking = True
+            
+            data = chunk.get("data", "")
+            yield f"data: {json.dumps({'id': msg_id, 'object': 'chat.completion.chunk', 'created': created, 'model': model, 'choices': [{'index': 0, 'delta': {'reasoning_content': data}, 'finish_reason': None}]}, ensure_ascii=False)}\n\n"
+            continue
+
+        if in_thinking and chunk.get("type") in ("content", "thinking_end"):
+            in_thinking = False
+            if chunk.get("type") == "thinking_end":
+                continue
+
         if chunk.get("type") == "content":
             delta: Dict[str, Any] = {"content": chunk.get("data", "")}
             if not sent_role:
@@ -794,6 +818,12 @@ async def chat_completions(request: Request):
         if key in body:
             generation_params[key] = body[key]
 
+    enable_thinking = body.get("enable_thinking")
+    if enable_thinking is None:
+        enable_thinking = "thinking" in model.lower() or "deepseek" in model.lower()
+    else:
+        enable_thinking = bool(enable_thinking)
+
     allowed_tools = [t.get("function", {}).get("name") for t in tools]
     tool_params_by_name: Dict[str, List[str]] = {}
     for t in tools:
@@ -868,7 +898,7 @@ async def chat_completions(request: Request):
                     }
                 ] + attempt_messages
 
-            full_text = _collect_glm_response(client, chat_id, attempt_messages, generation_params, parent_id)
+            full_text = _collect_glm_response(client, chat_id, attempt_messages, generation_params, parent_id, enable_thinking=enable_thinking)
             tool_call = _extract_tool_call(full_text, allowed_tools, tool_params_by_name)
             if not tool_call:
                 tool_call = _extract_partial_tool_call(full_text, allowed_tools, tool_params_by_name)
@@ -891,7 +921,7 @@ async def chat_completions(request: Request):
             # fallback to content (or error)
             return StreamingResponse(_stream_content(full_text or "Unable to generate tool call. Please retry.", model), media_type="text/event-stream")
         return StreamingResponse(
-            _stream_glm_response(client, chat_id, glm_messages, generation_params, model, parent_id),
+            _stream_glm_response(client, chat_id, glm_messages, generation_params, model, parent_id, enable_thinking=enable_thinking),
             media_type="text/event-stream",
         )
 
@@ -908,7 +938,7 @@ async def chat_completions(request: Request):
                 }
             ] + attempt_messages
 
-        full_text = _collect_glm_response(client, chat_id, attempt_messages, generation_params, parent_id)
+        full_text = _collect_glm_response(client, chat_id, attempt_messages, generation_params, parent_id, enable_thinking=enable_thinking)
         tool_call = _extract_tool_call(full_text, allowed_tools, tool_params_by_name)
         if not tool_call:
             tool_call = _extract_partial_tool_call(full_text, allowed_tools, tool_params_by_name)
@@ -926,7 +956,7 @@ async def chat_completions(request: Request):
             return JSONResponse(_openai_tool_response(fallback["tool_calls"], model))
         return JSONResponse(_openai_response(full_text, model))
 
-    full_text = _collect_glm_response(client, chat_id, glm_messages, generation_params, parent_id)
+    full_text = _collect_glm_response(client, chat_id, glm_messages, generation_params, parent_id, enable_thinking=enable_thinking)
     return JSONResponse(_openai_response(full_text, model))
 
 

@@ -108,6 +108,8 @@ In OpenCode TUI (or any client), you can add a directive line to the user prompt
 
 These directive lines are stripped before sending content to the model, and only affect the proxy flags.
 
+OpenCode renders `reasoning_content` in a dedicated thinking panel. The proxy now streams thinking there and keeps the final answer separate. If you want faster responses, use `/thinking off` (thinking mode can add noticeable latency).
+
 ## Quick Start (Token)
 
 Pick one of these:
@@ -211,7 +213,7 @@ npm --prefix ts_glm run start:cli -- whoami
 ## Features
 
 - **Streaming responses** - See responses as they're generated
-- **Thinking mode** - View the model's reasoning process
+- **Thinking mode** - View the model's reasoning process (separate OpenCode thinking panel)
 - **Interactive mode** - REPL-style conversation
 - **Rich terminal output** - Beautiful formatting with colors
 

@@ -371,13 +371,22 @@ class GLMClient:
                                 content = delta.get("content", "")
                                 if content:
                                     # Check for thinking tags
-                                    if "<think>" in content:
+                                    import re
+                                    
+                                    # Handle <think> with optional attributes
+                                    think_match = re.search(r"<think(?: [^>]*)?>", content)
+                                    if think_match:
                                         in_thinking = True
-                                        content = content.replace("<think>", "")
+                                        content = content.replace(think_match.group(0), "")
+                                    
                                     if "</think>" in content:
                                         in_thinking = False
-                                        content = content.replace("</think>", "")
+                                        parts = content.split("</think>")
+                                        if parts[0]:
+                                            yield {"type": "thinking", "data": parts[0]}
                                         yield {"type": "thinking_end", "data": ""}
+                                        if len(parts) > 1 and parts[1]:
+                                            yield {"type": "content", "data": parts[1]}
                                         continue
 
                                     if in_thinking:

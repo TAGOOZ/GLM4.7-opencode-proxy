@@ -977,6 +977,7 @@ const collectGlmResponse = async (
   options?: { enableThinking?: boolean; features?: Record<string, unknown> },
 ) => {
   let content = "";
+  let thinking = "";
   let parentId: string | null = null;
   try {
     parentId = await client.getCurrentMessageId(chatId);
@@ -993,7 +994,12 @@ const collectGlmResponse = async (
   })) {
     if (chunk.type === "content") {
       content += chunk.data;
+    } else if (chunk.type === "thinking") {
+      thinking += chunk.data;
     }
+  }
+  if (thinking) {
+    return `<think>\n${thinking.trim()}\n</think>\n\n${content.trim()}`.trim();
   }
   return content.trim();
 };
@@ -1492,6 +1498,22 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
     const created = Math.floor(Date.now() / 1000);
     let sentRole = false;
     for await (const chunk of generator) {
+      if (chunk.type === "thinking") {
+        const payload = {
+          id: streamId,
+          object: "chat.completion.chunk",
+          created,
+          model,
+          choices: [{ index: 0, delta: { reasoning_content: chunk.data }, finish_reason: null }],
+        };
+        reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
+        continue;
+      }
+
+      if (chunk.type === "thinking_end") {
+        continue;
+      }
+
       if (chunk.type !== "content") continue;
       const payload = {
         id: streamId,
@@ -1521,7 +1543,10 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
     return reply.raw.end();
   }
 
-  const content = await collectGlmResponse(chatId, glmMessages);
+  const content = await collectGlmResponse(chatId, glmMessages, {
+    enableThinking: enableThinkingFinal,
+    features: featureOverrides,
+  });
   if (tools.length > 0) {
     const rawToolCalls = parseRawToolCalls(content, toolRegistry);
     if (rawToolCalls) {
