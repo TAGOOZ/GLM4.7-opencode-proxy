@@ -205,6 +205,7 @@ export class GLMClient {
     includeHistory?: boolean;
     parentMessageId?: string | null;
     generationParams?: Record<string, unknown>;
+    features?: Record<string, unknown>;
   }): AsyncGenerator<StreamChunk> {
     const debugStream = process.env.GLM_DEBUG_STREAM === "1";
     const prompt = options.messages.length ? options.messages[options.messages.length - 1].content : "";
@@ -238,6 +239,20 @@ export class GLMClient {
       }
     }
 
+    const baseFeatures = {
+      image_generation: false,
+      web_search: false,
+      auto_web_search: false,
+      preview_mode: true,
+      flags: [],
+      enable_thinking: options.enableThinking ?? true,
+    };
+    const featureOverrides = options.features && typeof options.features === "object" ? options.features : {};
+    const features = { ...baseFeatures, ...featureOverrides };
+    if (typeof options.enableThinking === "boolean") {
+      features.enable_thinking = options.enableThinking;
+    }
+
     const payload = {
       stream: options.stream ?? true,
       model: options.model ?? "glm-4.7",
@@ -245,14 +260,7 @@ export class GLMClient {
       signature_prompt: prompt,
       params: options.generationParams || {},
       extra: {},
-      features: {
-        image_generation: false,
-        web_search: false,
-        auto_web_search: false,
-        preview_mode: true,
-        flags: [],
-        enable_thinking: options.enableThinking ?? true,
-      },
+      features,
       variables: {
         "{{USER_NAME}}": "CLI User",
         "{{USER_LOCATION}}": "Unknown",

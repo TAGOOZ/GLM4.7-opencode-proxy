@@ -911,6 +911,7 @@ const convertMessages = (messages: any[], tools: any[]): { role: string; content
 const collectGlmResponse = async (
   chatId: string,
   glmMessages: { role: string; content: string }[],
+  options?: { enableThinking?: boolean; features?: Record<string, unknown> },
 ) => {
   let content = "";
   let parentId: string | null = null;
@@ -923,7 +924,8 @@ const collectGlmResponse = async (
     chatId,
     messages: glmMessages,
     includeHistory: false,
-    enableThinking: false,
+    enableThinking: options?.enableThinking ?? false,
+    features: options?.features,
     parentMessageId: parentId,
   })) {
     if (chunk.type === "content") {
@@ -1053,6 +1055,24 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
   const toolResultCount = messages.filter((m: any) => m.role === "tool" || m.tool_call_id).length;
   const maxToolLoops = Number(process.env.PROXY_TOOL_LOOP_LIMIT || "3");
   const toolRegistry = buildToolRegistry(tools);
+  const bodyFeatures = body?.features && typeof body.features === "object" ? body.features : {};
+  const featureOverrides: Record<string, unknown> = { ...bodyFeatures };
+  const enableThinking =
+    typeof body?.enable_thinking === "boolean"
+      ? body.enable_thinking
+      : typeof body?.enableThinking === "boolean"
+        ? body.enableThinking
+        : typeof (bodyFeatures as { enable_thinking?: unknown }).enable_thinking === "boolean"
+          ? (bodyFeatures as { enable_thinking: boolean }).enable_thinking
+          : typeof (bodyFeatures as { enableThinking?: unknown }).enableThinking === "boolean"
+            ? (bodyFeatures as { enableThinking: boolean }).enableThinking
+            : false;
+  if (typeof body?.web_search === "boolean") {
+    featureOverrides.web_search = body.web_search;
+  }
+  if (typeof body?.auto_web_search === "boolean") {
+    featureOverrides.auto_web_search = body.auto_web_search;
+  }
   const loweredUser = lastUser.toLowerCase();
   const hasEmbeddedRead = /Called the Read tool with the following input/i.test(lastUser);
   const fileMention =
@@ -1155,7 +1175,10 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
       return sendToolCalls(reply, earlyFallback, model, stream);
     }
 
-    let responseText = await collectGlmResponse(chatId, glmMessages);
+    let responseText = await collectGlmResponse(chatId, glmMessages, {
+      enableThinking,
+      features: featureOverrides,
+    });
     const initialResponseText = responseText;
     if (process.env.PROXY_DEBUG) {
       const preview = responseText.length > 400 ? `${responseText.slice(0, 400)}…` : responseText;
@@ -1168,7 +1191,10 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
         role: "assistant",
         content: "Return ONLY valid JSON following the schema. No extra text.",
       };
-      responseText = await collectGlmResponse(chatId, [...glmMessages, corrective]);
+      responseText = await collectGlmResponse(chatId, [...glmMessages, corrective], {
+        enableThinking,
+        features: featureOverrides,
+      });
       if (process.env.PROXY_DEBUG) {
         const preview = responseText.length > 400 ? `${responseText.slice(0, 400)}…` : responseText;
         console.log("proxy_debug model_retry_raw:", preview);
@@ -1181,7 +1207,10 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
         role: "assistant",
         content: "Return ONLY valid JSON object. No markdown. No extra keys.",
       };
-      responseText = await collectGlmResponse(chatId, [...glmMessages, stricter]);
+      responseText = await collectGlmResponse(chatId, [...glmMessages, stricter], {
+        enableThinking,
+        features: featureOverrides,
+      });
       if (process.env.PROXY_DEBUG) {
         const preview = responseText.length > 400 ? `${responseText.slice(0, 400)}…` : responseText;
         console.log("proxy_debug model_retry2_raw:", preview);
@@ -1218,7 +1247,10 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
             },
             ...convertMessages(messages, []),
           ];
-          const finalText = await collectGlmResponse(chatId, finalMessages);
+          const finalText = await collectGlmResponse(chatId, finalMessages, {
+            enableThinking,
+            features: featureOverrides,
+          });
           if (stream) {
             reply.raw.writeHead(200, { "Content-Type": "text/event-stream" });
             reply.raw.write(streamContent(finalText, model));
@@ -1327,7 +1359,10 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
 
   if (stream) {
     if (tools.length > 0 && !shouldAttemptTools) {
-      const fullText = await collectGlmResponse(chatId, glmMessages);
+      const fullText = await collectGlmResponse(chatId, glmMessages, {
+        enableThinking,
+        features: featureOverrides,
+      });
       const rawToolCalls = parseRawToolCalls(fullText, toolRegistry);
       if (rawToolCalls) {
         return sendToolCalls(reply, rawToolCalls, model, true);
@@ -1347,7 +1382,8 @@ const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply
       chatId,
       messages: glmMessages,
       includeHistory: false,
-      enableThinking: false,
+      enableThinking,
+      features: featureOverrides,
       parentMessageId: parentId,
     });
     const streamId = `chatcmpl-${crypto.randomUUID().slice(0, 8)}`;
