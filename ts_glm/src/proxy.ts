@@ -464,6 +464,19 @@ const extractCommand = (text: string): string | null => {
   return null;
 };
 
+const DANGEROUS_COMMAND_PATTERNS: RegExp[] = [
+  /\brm\s+-rf\b/i,
+  /\bmkfs\b/i,
+  /\bdd\b/i,
+  /\bcurl\b.*\|\s*sh/i,
+  /\bwget\b.*\|\s*sh/i,
+  /:\(\)\s*\{:\|:&\};:/,
+];
+
+const isDangerousCommand = (command: string): boolean => {
+  return DANGEROUS_COMMAND_PATTERNS.some((pattern) => pattern.test(command));
+};
+
 const extractQuotedText = (text: string): string | null => {
   const matches = [...text.matchAll(/`([^`]+)`|"([^"]+)"|'([^']+)'/g)];
   if (!matches.length) return null;
@@ -617,7 +630,11 @@ const inferRunToolCall = (registry: Map<string, ToolInfo>, userText: string) => 
   if (command) {
     const loweredCmd = command.toLowerCase().trim();
     if (!/^(rg|ripgrep|grep|rm|mkdir|mv)\b/.test(loweredCmd)) {
-      inferred = command;
+      if (!isDangerousCommand(command)) {
+        inferred = command;
+      } else if (process.env.PROXY_DEBUG) {
+        console.warn("proxy_debug blocked_dangerous_command");
+      }
     }
   }
   if (!inferred) {
