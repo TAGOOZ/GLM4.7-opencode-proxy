@@ -370,6 +370,9 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
     source: "planner" | "raw" | "heuristic" | "explicit",
     registry: Map<string, ToolInfo>
   ): GuardResult => {
+    if (toolCalls.length > PROXY_MAX_ACTIONS_PER_TURN) {
+      return { ok: false, reason: "too_many_actions" };
+    }
     for (const call of toolCalls) {
       const toolName = normalizeToolName(call?.function?.name || call?.name || "");
       if (!PROXY_ALLOW_WEB_SEARCH && isNetworkToolName(toolName)) {
