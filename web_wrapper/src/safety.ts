@@ -80,7 +80,9 @@ export const isCommandAllowed = (command: string, config: ProtocolConfig): { ok:
   return { ok: true };
 };
 
-export const truncateOutput = (value: string, limit = 50000): { value: string; truncated: boolean } => {
+export const DEFAULT_OUTPUT_LIMIT = 50000;
+
+export const truncateOutput = (value: string, limit = DEFAULT_OUTPUT_LIMIT): { value: string; truncated: boolean } => {
   if (value.length <= limit) {
     return { value, truncated: false };
   }

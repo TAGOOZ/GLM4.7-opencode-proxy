@@ -5,7 +5,37 @@ import fg from "fast-glob";
 import crypto from "crypto";
 
 import type { ToolContext, ToolResult, ToolRunner } from "./types.js";
-import { defaultRedactPatterns, isCommandAllowed, redactSecrets, truncateOutput } from "./safety.js";
+import { DEFAULT_OUTPUT_LIMIT, defaultRedactPatterns, isCommandAllowed, redactSecrets, truncateOutput } from "./safety.js";
+
+type BoundedTextBuffer = {
+  limit: number;
+  captured: string;
+  totalChars: number;
+};
+
+const createBoundedTextBuffer = (limit: number): BoundedTextBuffer => ({ limit, captured: "", totalChars: 0 });
+
+const toChunkString = (data: unknown): string => {
+  if (typeof data === "string") return data;
+  if (Buffer.isBuffer(data)) return data.toString("utf8");
+  return String(data ?? "");
+};
+
+const appendBoundedText = (buffer: BoundedTextBuffer, chunk: unknown) => {
+  const text = toChunkString(chunk);
+  buffer.totalChars += text.length;
+  if (buffer.captured.length >= buffer.limit) return;
+  const remaining = buffer.limit - buffer.captured.length;
+  buffer.captured += text.length <= remaining ? text : text.slice(0, remaining);
+};
+
+const finalizeBoundedText = (buffer: BoundedTextBuffer): { value: string; truncated: boolean } => {
+  if (buffer.totalChars <= buffer.limit) {
+    return { value: buffer.captured, truncated: false };
+  }
+  const truncatedChars = buffer.totalChars - buffer.limit;
+  return { value: buffer.captured + `\n...[truncated ${truncatedChars} chars]`, truncated: true };
+};
 
 const resolveSafePath = (cwd: string, target: string): string => {
   const base = path.resolve(cwd);
@@ -96,13 +126,21 @@ export const runShellTool = (allowlist: string[], denylist: RegExp[]): ToolRunne
         env: process.env,
         timeout: ctx.timeoutMs,
       });
-      let stdout = "";
-      let stderr = "";
-      child.stdout.on("data", (data) => (stdout += data.toString()));
-      child.stderr.on("data", (data) => (stderr += data.toString()));
+      const stdout = createBoundedTextBuffer(DEFAULT_OUTPUT_LIMIT);
+      const stderr = createBoundedTextBuffer(DEFAULT_OUTPUT_LIMIT);
+      child.stdout.on("data", (data) => appendBoundedText(stdout, data));
+      child.stderr.on("data", (data) => appendBoundedText(stderr, data));
+      child.on("error", (err) => {
+        resolve({
+          tool: "run_shell",
+          ok: false,
+          error: "spawn_failed",
+          note: err instanceof Error ? err.message : String(err),
+        });
+      });
       child.on("close", (code) => {
-        const truncOut = truncateOutput(stdout);
-        const truncErr = truncateOutput(stderr);
+        const truncOut = finalizeBoundedText(stdout);
+        const truncErr = finalizeBoundedText(stderr);
         const patterns = defaultRedactPatterns();
         const redactedOut = redactSecrets(truncOut.value, patterns);
         const redactedErr = redactSecrets(truncErr.value, patterns);
