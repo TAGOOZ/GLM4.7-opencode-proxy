@@ -871,11 +871,22 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
       }
 
       const activeChatId = await getChatId();
+      let plannerParentMessageId: string | null | undefined = undefined;
+      if (!useHistoryThisRequest) {
+        // Planner retries can otherwise incur repeated getChat() calls via getCurrentMessageId().
+        // Resolve once per turn and reuse across retries.
+        try {
+          plannerParentMessageId = await client.getCurrentMessageId(activeChatId);
+        } catch {
+          plannerParentMessageId = null;
+        }
+      }
       let responseText = await collectGlmResponse(client, activeChatId, glmMessages, {
         enableThinking: enableThinkingFinal,
         features: featureOverrides,
         includeThinking: false,
         includeHistory: useHistoryThisRequest,
+        parentMessageId: plannerParentMessageId,
       });
       const initialResponseText = responseText;
       if (PROXY_DEBUG) {
@@ -915,6 +926,7 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
           features: featureOverrides,
           includeThinking: false,
           includeHistory: useHistoryThisRequest,
+          parentMessageId: plannerParentMessageId,
         });
         responsePromptTokens = estimateMessagesTokens(correctedMessages);
         if (PROXY_DEBUG) {
@@ -938,6 +950,7 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
           features: featureOverrides,
           includeThinking: false,
           includeHistory: useHistoryThisRequest,
+          parentMessageId: plannerParentMessageId,
         });
         responsePromptTokens = estimateMessagesTokens(stricterMessages);
         if (PROXY_DEBUG) {
