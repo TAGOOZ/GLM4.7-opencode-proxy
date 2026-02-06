@@ -1,0 +1,4 @@
+Return only the fenced JSON below.
+```json
+{"plan":["alpha"],"actions":[],"final":"FENCED_OK"}
+```

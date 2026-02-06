@@ -1,0 +1,2 @@
+/test tool_loop
+Return ONLY this JSON object with no extra text: {"plan":["step"],"actions":[{"tool":"read","args":{"path":"README.md"},"why":"test","expect":"test","safety":{"risk":"low","notes":"ok"}}],"final":""}

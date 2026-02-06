@@ -1,0 +1,7 @@
+/test no-heuristics
+Use tools only.
+1) Call the read tool on webwrapper-eval/tmp/large-diff/large.txt with offset 0 and limit 5. Do not read further.
+2) After you receive the file contents, call the edit tool to replace:
+oldString: "line 1\nline 2\nline 3"
+newString: "line 1 updated\nline 2\nline 3"
+Do not call edit in the same response as the read.

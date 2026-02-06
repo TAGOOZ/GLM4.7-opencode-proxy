@@ -231,12 +231,30 @@ const extractFilePath = (text: string): string | null => {
   return pathToken || null;
 };
 
+const isSensitivePath = (value: string): boolean => {
+  const normalized = value.replace(/\\/g, "/").toLowerCase();
+  const patterns = [
+    /(^|\/)\.ssh(\/|$)/,
+    /(^|\/)\.git(\/|$)/,
+    /(^|\/)\.env(\.|$|\/)/,
+    /(^|\/)\.npmrc($|\/)/,
+    /(^|\/)\.pypirc($|\/)/,
+    /(^|\/)\.netrc($|\/)/,
+    /(^|\/)id_rsa($|\/)/,
+    /(^|\/)id_ed25519($|\/)/,
+    /(^|\/)creds?[^\/]*$/i,
+    /(^|\/)credentials?[^\/]*$/i,
+    /(^|\/)[^\/]*key[^\/]*$/i,
+  ];
+  return patterns.some((pattern) => pattern.test(normalized));
+};
+
 const inferReadToolCall = (registry: Map<string, ToolInfo>, userText: string) => {
   const lowered = userText.toLowerCase();
-  const readIntent = ["read", "open", "show", "cat", "contents", "what is in", "what's in", "display"];
   const path = extractFilePath(userText);
   const hasSearchIntent = /\b(search|find)\b/.test(lowered);
-  const hasReadIntent = readIntent.some((k) => lowered.includes(k)) || hasSearchIntent;
+  const hasReadVerb = /\b(read|open|show|cat|print|display)\b/.test(lowered);
+  const hasReadIntent = hasReadVerb || hasSearchIntent;
   const hasRunTool = Boolean(findTool(registry, "run") || findTool(registry, "run_shell"));
   if (!hasReadIntent) return null;
   if (hasSearchIntent && hasRunTool) return null;
@@ -246,6 +264,7 @@ const inferReadToolCall = (registry: Map<string, ToolInfo>, userText: string) =>
   const toolInfo = findTool(registry, "read");
   if (!toolInfo) return null;
   if (!path) return null;
+  if (isSensitivePath(path)) return null;
   const key = pickArgKey(toolInfo, ["filePath", "path"]);
   const toolName = toolInfo.tool.function?.name || toolInfo.tool.name || "read";
   return [
@@ -376,6 +395,25 @@ const inferSearchCommand = (userText: string): string | null => {
   return `grep -R -n ${safePattern} ${safePath}`;
 };
 
+const inferSearchToolCall = (registry: Map<string, ToolInfo>, userText: string) => {
+  const command = inferSearchCommand(userText) || inferGrepCommand(userText);
+  if (!command) return null;
+  if (!/^(rg|ripgrep|grep)\b/i.test(command.trim())) return null;
+  const toolInfo = findTool(registry, "run") || findTool(registry, "run_shell");
+  if (!toolInfo) return null;
+  const key = pickArgKey(toolInfo, ["command", "cmd"]);
+  const toolName = toolInfo.tool.function?.name || toolInfo.tool.name || "run_shell";
+  const args = normalizeArgsForTool(toolInfo, { [key]: command });
+  return [
+    {
+      id: `call_${crypto.randomUUID().slice(0, 8)}`,
+      index: 0,
+      type: "function",
+      function: { name: toolName, arguments: JSON.stringify(args) },
+    },
+  ];
+};
+
 const inferDeleteCommand = (userText: string): string | null => {
   const lowered = userText.toLowerCase();
   if (!/\b(delete|remove)\b/.test(lowered)) return null;
@@ -410,6 +448,14 @@ const inferMoveCommand = (userText: string): string | null => {
 const inferRunToolCall = (registry: Map<string, ToolInfo>, userText: string) => {
   const toolInfo = findTool(registry, "run") || findTool(registry, "run_shell");
   if (!toolInfo) return null;
+  const loweredUser = userText.toLowerCase();
+  if (
+    /\b(create|make)\b/.test(loweredUser) &&
+    /\b(file|python file|py file)\b/.test(loweredUser) &&
+    /\b(folder|directory|dir)\b/.test(loweredUser)
+  ) {
+    return null;
+  }
   const command = extractCommand(userText);
   let inferred: string | null = null;
   if (command) {
@@ -489,4 +535,5 @@ export {
   inferReadToolCall,
   inferRunToolCall,
   inferWriteToolCall,
+  inferSearchToolCall,
 };

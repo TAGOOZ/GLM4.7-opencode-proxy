@@ -110,6 +110,32 @@ These directive lines are stripped before sending content to the model, and only
 
 OpenCode renders `reasoning_content` in a dedicated thinking panel. The proxy now streams thinking there and keeps the final answer separate. If you want faster responses, use `/thinking off` (thinking mode can add noticeable latency).
 
+## Security Model (Proxy + Runner)
+
+This repo follows a strict OpenCode-style safety model:
+
+- **Mutations require validated planner JSON.** Heuristics and raw tool calls are discovery-only.
+- **Heuristic allowlist:** `read`, `list/glob`, `grep/search` only.
+- **Runner is the security boundary:** repo-root jail, sensitive-path denylist, output redaction, and size caps.
+**Confirmations are handled by the client** (e.g., OpenCode permission prompts).
+This proxy does not require custom tool arguments for approvals.
+
+Examples:
+
+```json
+{"tool":"read","args":{"filePath":"README.md"}}
+```
+
+```json
+{"tool":"write","args":{"filePath":"notes.txt","content":"..."}}
+```
+
+```json
+{"tool":"run_shell","args":{"command":"mv foo bar"}}
+```
+
+Note: `rm` is not in the default allowlist; enabling deletes requires an explicit allowlist change.
+
 ## Quick Start (Token)
 
 Pick one of these:

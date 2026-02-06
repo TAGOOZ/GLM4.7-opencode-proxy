@@ -1,0 +1,5 @@
+/test no-heuristics
+Use tools only.
+1) Call the read tool on webwrapper-eval/tmp/tool-apply-patch/notes.txt. Do not edit yet.
+2) After you receive the file contents, call the edit tool to replace "alpha" with "beta".
+Do not call edit in the same response as the read.

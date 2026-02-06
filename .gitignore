@@ -21,4 +21,7 @@ web_wrapper/node_modules/
 web_wrapper/dist/
 ts_glm/node_modules/
 ts_glm/dist/
+ts_glm/tests/
 node_modules/
+webwrapper-eval/evidence/
+webwrapper-eval/tmp/

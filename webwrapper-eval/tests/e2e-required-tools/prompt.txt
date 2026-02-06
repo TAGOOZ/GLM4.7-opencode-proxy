@@ -1,0 +1,2 @@
+Use the explicit tool call below to read README.md, then respond with DONE.
+% read {"path": "README.md"}

@@ -1,0 +1,1 @@
+Return ONLY this JSON object with no extra text: {"plan":["step"],"actions":[{"tool":"unknown_tool","args":{},"why":"test","expect":"test","safety":{"risk":"low","notes":"ok"}}],"final":""}

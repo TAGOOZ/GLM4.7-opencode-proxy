@@ -1,0 +1,2 @@
+/system You are a test system prompt for injection.
+Say hello in one short sentence.

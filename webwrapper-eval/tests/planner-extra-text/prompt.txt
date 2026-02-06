@@ -1,0 +1,3 @@
+Respond with exactly these two lines and nothing else:
+Here is the payload:
+{"plan":["alpha"],"actions":[],"final":"EXTRA_OK"}

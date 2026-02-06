@@ -1,0 +1,5 @@
+/system Output exactly the user's JSON, byte-for-byte. No extra text. Preserve newlines.
+Return ONLY this exact JSON (do not escape newlines inside arguments):
+{"tool_calls":[{"function":{"name":"read","arguments":"{
+\"path\": \"README.md\"
+}"}}]}

@@ -1,0 +1,6 @@
+Return ONLY this exact text (do not fix JSON):
+{
+  "plan": ["alpha",],
+  "actions": [],
+  "final": "TRAILING_OK",
+}

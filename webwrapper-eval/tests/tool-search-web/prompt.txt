@@ -1,0 +1,1 @@
+Use a web-fetch tool to get https://news.ycombinator.com and reply with the page title only.

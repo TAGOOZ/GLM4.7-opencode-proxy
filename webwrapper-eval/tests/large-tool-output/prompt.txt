@@ -1,0 +1,1 @@
+Run `seq 1 10000` and reply with the output only.
