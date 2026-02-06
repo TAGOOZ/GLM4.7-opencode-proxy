@@ -29,3 +29,5 @@
   Files: ts_glm/src/proxy/context.ts, ts_glm/tests/context-compaction.test.ts.
 - #24: Reduced GLMClient stream parser string churn by scanning for newlines incrementally (avoids regex split arrays; preserves partial buffers). Added a chunked SSE regression test. Tests: npm --prefix ts_glm test.
   Files: ts_glm/src/glmClient.ts, ts_glm/tests/stream-parser.test.ts.
+- #25: Avoided buffering full stdout/stderr in the run_shell tool by capturing bounded output while streaming (kept in sync via DEFAULT_OUTPUT_LIMIT) and adding a truncation regression test. Tests: npm --prefix web_wrapper test; npm --prefix ts_glm test.
+  Files: web_wrapper/src/safety.ts, web_wrapper/src/tools.ts, web_wrapper/tests/run-shell.test.ts.
