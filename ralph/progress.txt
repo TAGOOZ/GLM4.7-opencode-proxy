@@ -19,3 +19,5 @@
   Files: ts_glm/src/proxy/handler.ts, ts_glm/tests/raw-tool-calls-limit.test.ts.
 - #33: Made too_many_actions recoverable by truncating excess planner actions and tool_calls to PROXY_MAX_ACTIONS_PER_TURN (instead of blocking). Tests: npm --prefix ts_glm test.
   Files: ts_glm/src/proxy/handler.ts, ts_glm/tests/raw-tool-calls-limit.test.ts.
+- #20: Reduced redundant chat-history round trips by skipping getCurrentMessageId preflight when includeHistory=true (GLMClient already fetches chat history in that mode). Tests: npm --prefix ts_glm test.
+  Files: ts_glm/src/proxy/messages.ts, ts_glm/tests/history-roundtrips.test.ts.

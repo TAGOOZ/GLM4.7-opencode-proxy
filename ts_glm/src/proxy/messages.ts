@@ -236,15 +236,21 @@ const collectGlmResponse = async (
   let content = "";
   let thinking = "";
   let parentId: string | null = null;
-  try {
-    parentId = await client.getCurrentMessageId(chatId);
-  } catch {
-    parentId = null;
+  const includeHistory = options?.includeHistory ?? false;
+  // If we're already including chat history in the completion request, GLMClient will fetch it
+  // internally and can resolve the current parent ID from that same request. Avoid the redundant
+  // preflight getChat() call in that case.
+  if (!includeHistory) {
+    try {
+      parentId = await client.getCurrentMessageId(chatId);
+    } catch {
+      parentId = null;
+    }
   }
   for await (const chunk of client.sendMessage({
     chatId,
     messages: glmMessages,
-    includeHistory: options?.includeHistory ?? false,
+    includeHistory,
     enableThinking: options?.enableThinking ?? false,
     features: options?.features,
     parentMessageId: parentId,
