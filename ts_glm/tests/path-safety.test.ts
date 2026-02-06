@@ -31,7 +31,7 @@ test("isSensitivePath still blocks high-signal secret paths", () => {
   assert.equal(isSensitivePath(".git/config"), true);
   assert.equal(isSensitivePath("config/api_key.txt"), true);
   assert.equal(isSensitivePath("config/private-key.pem"), true);
+  assert.equal(isSensitivePath("config/creds_backup.txt"), true);
   assert.equal(isSensitivePath("config/credentials.json"), true);
   assert.equal(isSensitivePath(".gitignore"), false);
 });
-

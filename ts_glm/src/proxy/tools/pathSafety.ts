@@ -40,8 +40,9 @@ const isSensitivePath = (value: string): boolean => {
 
   if (base === "id_rsa" || base === "id_ed25519") return true;
 
-  if (/^creds?\b/i.test(base)) return true;
-  if (/^credentials?\b/i.test(base)) return true;
+  // "creds*" is a high-signal secret filename prefix; avoid false positives like "credit*".
+  if (/^creds/i.test(base)) return true;
+  if (/^credentials?(?:$|[._-])/i.test(base)) return true;
 
   const fileName = base.replace(/\.[a-z0-9]{1,10}$/i, "");
   const compact = fileName.replace(/[^a-z0-9]/g, "");
@@ -78,4 +79,3 @@ const isSensitivePath = (value: string): boolean => {
 };
 
 export { isSensitivePath, isUnsafePathInput };
-
