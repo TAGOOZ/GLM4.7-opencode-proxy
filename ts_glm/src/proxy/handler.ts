@@ -495,7 +495,23 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
       }
       return sendContent(reply, content, model, promptTokens, stats);
     }
-    const guard = validateToolCalls(toolCalls, source, registry);
+    let boundedToolCalls = toolCalls;
+    let boundedUsage = usage;
+    if (PROXY_MAX_ACTIONS_PER_TURN > 0 && toolCalls.length > PROXY_MAX_ACTIONS_PER_TURN) {
+      boundedToolCalls = toolCalls.slice(0, PROXY_MAX_ACTIONS_PER_TURN);
+      boundedUsage = buildToolUsage(promptTokens, boundedToolCalls);
+      if (PROXY_DEBUG) {
+        console.log(
+          "proxy_debug too_many_actions: truncated_tool_calls",
+          JSON.stringify({
+            source,
+            originalCount: toolCalls.length,
+            returnedCount: boundedToolCalls.length,
+          }),
+        );
+      }
+    }
+    const guard = validateToolCalls(boundedToolCalls, source, registry);
     if (!guard.ok) {
       const content = `Blocked unsafe tool call (${guard.reason}).`;
       if (stream) {
@@ -504,7 +520,7 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
       return sendContent(reply, content, model, promptTokens, stats);
     }
     applyResponseHeaders(reply, stats);
-    return sendToolCalls(reply, toolCalls, model, stream, headers, usage);
+    return sendToolCalls(reply, boundedToolCalls, model, stream, headers, boundedUsage);
   };
 
   const validatePlannerActions = (
@@ -1088,6 +1104,26 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
         console.log("proxy_debug parsed_actions:", parsedData.actions.length);
         if (parsedData.actions.length) {
           console.log("proxy_debug action_tools:", parsedData.actions.map((a) => a.tool).join(","));
+        }
+      }
+      if (
+        PROXY_MAX_ACTIONS_PER_TURN > 0 &&
+        Array.isArray(parsedData.actions) &&
+        parsedData.actions.length > PROXY_MAX_ACTIONS_PER_TURN
+      ) {
+        const originalCount = parsedData.actions.length;
+        parsedData = {
+          ...parsedData,
+          actions: parsedData.actions.slice(0, PROXY_MAX_ACTIONS_PER_TURN),
+        };
+        if (PROXY_DEBUG) {
+          console.log(
+            "proxy_debug too_many_actions: truncated_planner_actions",
+            JSON.stringify({
+              originalCount,
+              returnedCount: parsedData.actions.length,
+            }),
+          );
         }
       }
 

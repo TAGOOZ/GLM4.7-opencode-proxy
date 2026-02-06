@@ -67,7 +67,7 @@ const runProxy = async (glmResponseText: string) => {
   return sent.payload;
 };
 
-test("raw tool_calls array exceeding PROXY_MAX_ACTIONS_PER_TURN is blocked", async () => {
+test("raw tool_calls array exceeding PROXY_MAX_ACTIONS_PER_TURN is truncated", async () => {
   const payload = await runProxy(
     JSON.stringify([
       { name: "read", arguments: { path: "README.md" } },
@@ -77,11 +77,10 @@ test("raw tool_calls array exceeding PROXY_MAX_ACTIONS_PER_TURN is blocked", asy
     ]),
   );
 
-  const msg = payload?.choices?.[0]?.message;
-  assert.equal(typeof msg?.content, "string");
-  assert.ok(String(msg.content).includes("Blocked unsafe tool call"));
-  assert.ok(String(msg.content).includes("too_many_actions"));
-  assert.equal("tool_calls" in msg, false);
+  const toolCalls = payload?.choices?.[0]?.message?.tool_calls;
+  assert.ok(Array.isArray(toolCalls));
+  assert.equal(toolCalls.length, 3);
+  assert.equal(toolCalls[0]?.function?.name, "read");
 });
 
 test("raw tool_calls array within limit is allowed", async () => {
@@ -99,3 +98,21 @@ test("raw tool_calls array within limit is allowed", async () => {
   assert.equal(toolCalls[0]?.function?.name, "read");
 });
 
+test("planner actions exceeding PROXY_MAX_ACTIONS_PER_TURN are truncated", async () => {
+  const payload = await runProxy(
+    JSON.stringify({
+      plan: ["read a few files"],
+      actions: [
+        { tool: "read", args: { path: "README.md" } },
+        { tool: "read", args: { path: "package.json" } },
+        { tool: "read", args: { path: "AGENTS.md" } },
+        { tool: "read", args: { path: "examples/sample.md" } },
+      ],
+    }),
+  );
+
+  const toolCalls = payload?.choices?.[0]?.message?.tool_calls;
+  assert.ok(Array.isArray(toolCalls));
+  assert.equal(toolCalls.length, 3);
+  assert.equal(toolCalls[0]?.function?.name, "read");
+});
