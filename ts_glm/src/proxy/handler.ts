@@ -325,6 +325,29 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
     });
   };
 
+  const isMutationPlannerAction = (
+    action: { tool: string },
+    registry: Map<string, ToolInfo>,
+  ): boolean => {
+    const rawName = normalizeToolName(action?.tool || "");
+    if (MUTATION_TOOLS_NORM.has(rawName)) return true;
+    const toolInfo = findTool(registry, action?.tool || "");
+    const resolvedName = normalizeToolName(
+      toolInfo?.tool?.function?.name || toolInfo?.tool?.name || "",
+    );
+    return MUTATION_TOOLS_NORM.has(resolvedName);
+  };
+
+  const applyMutationActionBoundary = (
+    actions: { tool: string; args: Record<string, unknown> }[],
+    registry: Map<string, ToolInfo>,
+  ): { actions: { tool: string; args: Record<string, unknown> }[]; truncated: boolean } => {
+    if (actions.length <= 1) return { actions, truncated: false };
+    const hasMutation = actions.some((action) => isMutationPlannerAction(action, registry));
+    if (!hasMutation) return { actions, truncated: false };
+    return { actions: actions.slice(0, 1), truncated: true };
+  };
+
   const extractPlannerFinal = (text: string): string | null => {
     if (!text || !text.trim()) return null;
     const parsed = tryParseModelOutput(text, true);
@@ -1135,7 +1158,19 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
         return sendContent(reply, content, model, responsePromptTokens, glmStats);
       }
 
-      const toolCalls = parsedData.actions.map((action, idx) => {
+      const boundedActions = applyMutationActionBoundary(parsedData.actions as any, toolRegistry);
+      if (boundedActions.truncated && PROXY_DEBUG) {
+        console.log(
+          "proxy_debug mutation_action_boundary: truncated_planner_actions",
+          JSON.stringify({
+            originalCount: parsedData.actions.length,
+            returnedCount: boundedActions.actions.length,
+            firstTool: parsedData.actions[0]?.tool || "",
+          }),
+        );
+      }
+
+      const toolCalls = boundedActions.actions.map((action, idx) => {
         const toolInfo = findTool(toolRegistry, action.tool);
         const toolName = toolInfo?.tool.function?.name || toolInfo?.tool.name || action.tool;
         let args = normalizeArgsForTool(toolInfo, action.args || {});

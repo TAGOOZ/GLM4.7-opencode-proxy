@@ -58,6 +58,7 @@ const buildToolPrompt = (tools: any[], extraSystem?: string): string => {
   lines.push("- read: open an existing file to inspect contents before changing it.");
   lines.push("- write: create a new file or replace a file only when explicitly asked to overwrite.");
   lines.push("- edit: modify an existing file with targeted changes when possible.");
+  lines.push("- for mutation tools (write/edit/apply_patch/run): include ONLY ONE action per response (confirmation boundary).");
   lines.push("- list/glob/grep: discover files or search content before editing.");
   lines.push("- be cautious when editing high-impact files (package.json, workflows, lockfiles).");
   lines.push("- use repo-relative paths (avoid absolute paths).");

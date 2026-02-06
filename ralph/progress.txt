@@ -11,3 +11,5 @@
   Files: ts_glm/src/proxy/constants.ts, ts_glm/src/proxy/handler.ts, ts_glm/src/proxy/tools/registry.ts, ts_glm/tests/network-tools.test.ts.
 - #36: Tightened proxy path safety by blocking absolute paths and reducing sensitive-path false positives (allow .env.example/.env.sample/.env.template/.env.dist; avoid matching "monkey"/"hockey" via overly-broad key substring). Tests: npm --prefix ts_glm test.
   Files: ts_glm/src/proxy/handler.ts, ts_glm/src/proxy/tools/infer.ts, ts_glm/src/proxy/tools/pathSafety.ts, ts_glm/tests/path-safety.test.ts.
+- #32: Enforced a confirmation boundary for mutation tools by truncating planner outputs to a single action whenever a mutation tool appears (prompt guidance + server-side guard). Tests: npm --prefix ts_glm test.
+  Files: ts_glm/src/proxy/handler.ts, ts_glm/src/proxy/messages.ts, ts_glm/tests/mutation-boundary.test.ts.
