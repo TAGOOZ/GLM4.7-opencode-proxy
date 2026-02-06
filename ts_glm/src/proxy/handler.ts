@@ -1175,16 +1175,10 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
         const toolName = toolInfo?.tool.function?.name || toolInfo?.tool.name || action.tool;
         let args = normalizeArgsForTool(toolInfo, action.args || {});
 
-        // Repair common planner mistakes: missing path/filePath on file tools.
-        // We infer the most recent file path mentioned in the conversation (often the file just created).
+        // Repair common planner mistakes: missing path/filePath on read tools.
+        // Never infer a target path for mutation tools (no heuristic mutations).
         const normalizedTool = String(toolName || "").toLowerCase().replace(/[_-]/g, "");
-        const needsPath =
-          normalizedTool === "read" ||
-          normalizedTool === "readfile" ||
-          normalizedTool === "write" ||
-          normalizedTool === "writefile" ||
-          normalizedTool === "edit" ||
-          normalizedTool === "editfile";
+        const needsPath = normalizedTool === "read" || normalizedTool === "readfile";
         const hasPath =
           args.path != null ||
           (args as any).filePath != null ||
