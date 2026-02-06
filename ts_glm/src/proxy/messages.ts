@@ -33,7 +33,22 @@ const formatParameters = (parameters: any): string | null => {
   return `  parameters: ${truncateText(raw, PROXY_TOOL_PROMPT_SCHEMA_MAX_CHARS)}`;
 };
 
+const toolPromptCache = new WeakMap<any[], Map<string, string>>();
+
 const buildToolPrompt = (tools: any[], extraSystem?: string): string => {
+  const extra =
+    extraSystem && extraSystem.trim()
+      ? truncateText(extraSystem, PROXY_TOOL_PROMPT_EXTRA_SYSTEM_MAX_CHARS)
+      : "";
+
+  let cachedByExtra = toolPromptCache.get(tools);
+  if (!cachedByExtra) {
+    cachedByExtra = new Map<string, string>();
+    toolPromptCache.set(tools, cachedByExtra);
+  }
+  const cached = cachedByExtra.get(extra);
+  if (cached) return cached;
+
   const lines = [SYSTEM_PROMPT, "", "Allowed tools:"];
   for (const tool of tools) {
     const fn = tool.function || {};
@@ -42,10 +57,10 @@ const buildToolPrompt = (tools: any[], extraSystem?: string): string => {
     const paramsLine = formatParameters(fn.parameters);
     if (paramsLine) lines.push(paramsLine);
   }
-  if (extraSystem && extraSystem.trim()) {
+  if (extra) {
     lines.push("");
     lines.push("Additional system instructions (follow them):");
-    lines.push(truncateText(extraSystem, PROXY_TOOL_PROMPT_EXTRA_SYSTEM_MAX_CHARS));
+    lines.push(extra);
   }
   lines.push("");
   lines.push("If tools are needed, include them ONLY in the JSON actions array (no tool_calls output).");
@@ -88,7 +103,11 @@ const buildToolPrompt = (tools: any[], extraSystem?: string): string => {
       final: "Concise response to the user.",
     })
   );
-  return lines.join("\n");
+
+  const prompt = lines.join("\n");
+  if (cachedByExtra.size >= 8) cachedByExtra.clear();
+  cachedByExtra.set(extra, prompt);
+  return prompt;
 };
 
 const extractContentText = (content: unknown): string => {

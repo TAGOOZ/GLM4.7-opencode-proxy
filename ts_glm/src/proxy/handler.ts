@@ -97,16 +97,22 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
     return { cleaned: kept.join("\n").trim(), systemLine, forceToolResult, disableHeuristics };
   };
 
-  const buildMessages = (sourceMessages: any[], toolList: any[]) => {
+  const buildMessages = (sourceMessages: any[], toolList: any[], extraSystem?: string) => {
     const converted = convertMessages(sourceMessages, toolList, {
       toolMaxLines: contextConfig.toolMaxLines,
       toolMaxChars: contextConfig.toolMaxChars,
+      extraSystem,
     });
     return compactMessages(converted, contextConfig);
   };
 
-  const buildInstructionMessages = (systemContent: string, sourceMessages: any[], toolList: any[]) => {
-    const base = buildMessages(sourceMessages, toolList);
+  const buildInstructionMessages = (
+    systemContent: string,
+    sourceMessages: any[],
+    toolList: any[],
+    extraSystem?: string,
+  ) => {
+    const base = buildMessages(sourceMessages, toolList, extraSystem);
     const combined = compactMessages(
       [
         {
@@ -720,7 +726,7 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
       .map((msg: any) => extractContentText(msg.content))
       .filter(Boolean)
       .join("\n\n");
-    const baseMessages = buildMessages(sanitizedMessages, shouldAttemptTools ? tools : []);
+    const baseMessages = buildMessages(sanitizedMessages, shouldAttemptTools ? tools : [], systemText);
     let glmMessages = baseMessages.messages;
     let glmStats = baseMessages.stats;
     if (PROXY_DEBUG) {
@@ -802,11 +808,6 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
     ].join(" ");
 
     if (hasToolResult && shouldAttemptTools) {
-      const instructed = buildInstructionMessages(
-        POST_TOOL_SYSTEM,
-        sanitizedMessages,
-        shouldAttemptTools ? tools : [],
-      );
       if (useHistoryThisRequest) {
         const toolSeed = tools;
         const instructedMessages = convertMessages(sanitizedMessages, toolSeed, {
@@ -818,16 +819,21 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
           [
             {
               role: "system",
-              content:
-                POST_TOOL_SYSTEM,
+              content: POST_TOOL_SYSTEM,
             },
             ...instructedMessages,
           ],
           contextConfig,
         );
         glmMessages = withInstruction.messages;
-        glmStats = instructed.stats;
+        glmStats = withInstruction.stats;
       } else {
+        const instructed = buildInstructionMessages(
+          POST_TOOL_SYSTEM,
+          sanitizedMessages,
+          tools,
+          systemText,
+        );
         glmMessages = instructed.messages;
         glmStats = instructed.stats;
       }
