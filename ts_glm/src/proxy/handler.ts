@@ -9,6 +9,7 @@ import {
   EMBEDDED_READ_REGEX,
   FILE_MENTION_REGEX,
   PLANNER_JSON_HINT_REGEX,
+  PROXY_ALLOW_NETWORK,
   PROXY_ALLOW_WEB_SEARCH,
   PROXY_ALWAYS_SEND_SYSTEM,
   PROXY_COMPACT_RESET,
@@ -44,6 +45,7 @@ import {
 import { buildToolRegistry, findTool, normalizeArgsForTool, type ToolInfo } from "./tools/registry.js";
 import { parseRawToolCalls, tryParseModelOutput, tryRepairPlannerOutput } from "./tools/parse.js";
 import { inferRecentFilePath } from "./tools/path.js";
+import { isProxyShellCommandAllowed } from "./tools/shellSafety.js";
 
 type ChatCompletionHandlerDeps = {
   client: GLMClient;
@@ -455,6 +457,10 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
         const command = String(args.command ?? args.cmd ?? "").trim();
         if (!command) return { ok: false, reason: "missing_command" };
         if (DANGEROUS_COMMAND_PATTERNS.some((pattern) => pattern.test(command))) {
+          return { ok: false, reason: "command_blocked" };
+        }
+        const allowCheck = isProxyShellCommandAllowed(command, PROXY_ALLOW_NETWORK);
+        if (!allowCheck.ok) {
           return { ok: false, reason: "command_blocked" };
         }
         if (source !== "planner") {

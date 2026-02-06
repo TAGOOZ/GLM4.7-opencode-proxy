@@ -1,0 +1,9 @@
+2026-02-06
+- Initialized workflow files.
+- Added Codex CLI hooks to ralph scripts (CODEX_BIN/CODEX_MODEL/CODEX_PROMPT_FLAG).
+- Added ralph/current-issue.txt support and a ralph-run-all script with model selection.
+- Added model_reasoning_effort wiring and defaults for effort tiers.
+- Updated Ralph prompt to enforce agent-picked task, risk priority, quality bar, and commit-per-iteration.
+- Simplified ralph-run-all to an AFK loop with fixed iterations and effort defaults.
+- #37: Hardened proxy run_shell validation with allowlist/denylist + network disabled by default (override via PROXY_ALLOW_NETWORK=1). Tests: npm --prefix ts_glm test.
+  Files: ts_glm/src/proxy/constants.ts, ts_glm/src/proxy/handler.ts, ts_glm/src/proxy/tools/shellSafety.ts, ts_glm/tests/shell-safety.test.ts.

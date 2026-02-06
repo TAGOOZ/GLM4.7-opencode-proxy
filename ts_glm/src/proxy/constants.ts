@@ -3,6 +3,8 @@ export const DEFAULT_MODEL = "glm-4.7";
 export const PROXY_DEBUG = process.env.PROXY_DEBUG === "1";
 export const PROXY_NEW_CHAT_PER_REQUEST = process.env.PROXY_NEW_CHAT_PER_REQUEST === "1";
 export const PROXY_ALLOW_WEB_SEARCH = process.env.PROXY_ALLOW_WEB_SEARCH === "1";
+// Networked shell commands are blocked by default. Set to 1 to allow commands like curl/wget/git clone/npm install.
+export const PROXY_ALLOW_NETWORK = process.env.PROXY_ALLOW_NETWORK === "1";
 export const PROXY_TOOL_LOOP_LIMIT = Number(process.env.PROXY_TOOL_LOOP_LIMIT || "3");
 export const PROXY_INCLUDE_USAGE = process.env.PROXY_INCLUDE_USAGE !== "0";
 export const PROXY_PLANNER_MAX_RETRIES = Number(process.env.PROXY_PLANNER_MAX_RETRIES || "1");
