@@ -35,6 +35,12 @@ const TOOL_NAME_ALIASES: Record<string, string[]> = {
 
 const normalizeToolName = (name: string) => name.toLowerCase().replace(/[_-]/g, "");
 
+const NETWORK_TOOL_NAMES_NORM = new Set(["webfetch", "websearch"]);
+
+const isNetworkToolName = (name: string): boolean => {
+  return NETWORK_TOOL_NAMES_NORM.has(normalizeToolName(name));
+};
+
 const isNameMatch = (target: string, candidate: string) => {
   if (candidate === target) return true;
   if (candidate.startsWith(target)) return true;
@@ -50,6 +56,10 @@ const collectToolNames = (tool: ToolLike): string[] => {
   if (fn.tool?.name) names.push(fn.tool.name);
   if (tool.name) names.push(tool.name);
   return names;
+};
+
+const isNetworkTool = (tool: ToolLike): boolean => {
+  return collectToolNames(tool).some((name) => isNetworkToolName(name));
 };
 
 const collectArgKeys = (tool: ToolLike): string[] => {
@@ -174,6 +184,8 @@ const normalizeArgsForTool = (toolInfo: ToolInfo | null, args: Record<string, un
 export {
   buildToolRegistry,
   findTool,
+  isNetworkTool,
+  isNetworkToolName,
   normalizeArgsForTool,
   type ToolInfo,
   type ToolLike,

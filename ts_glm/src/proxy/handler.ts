@@ -42,7 +42,7 @@ import {
   inferReadToolCall,
   inferSearchToolCall,
 } from "./tools/infer.js";
-import { buildToolRegistry, findTool, normalizeArgsForTool, type ToolInfo } from "./tools/registry.js";
+import { buildToolRegistry, findTool, isNetworkTool, isNetworkToolName, normalizeArgsForTool, type ToolInfo } from "./tools/registry.js";
 import { parseRawToolCalls, tryParseModelOutput, tryRepairPlannerOutput } from "./tools/parse.js";
 import { inferRecentFilePath } from "./tools/path.js";
 import { isProxyShellCommandAllowed } from "./tools/shellSafety.js";
@@ -375,6 +375,9 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
   ): GuardResult => {
     for (const call of toolCalls) {
       const toolName = normalizeToolName(call?.function?.name || call?.name || "");
+      if (!PROXY_ALLOW_WEB_SEARCH && isNetworkToolName(toolName)) {
+        return { ok: false, reason: "web_tools_disabled" };
+      }
       const toolInfo = findTool(registry, toolName);
       let args: Record<string, unknown> = {};
       const rawArgs = call?.function?.arguments ?? call?.arguments ?? {};
@@ -551,9 +554,10 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
     const body = request.body as any;
     const model = body.model || DEFAULT_MODEL;
     const messages = body.messages || [];
-    const rawTools = body.tools || [];
+    const rawTools = Array.isArray(body.tools) ? body.tools : [];
     const stream = Boolean(body.stream);
     const toolChoice = body.tool_choice;
+    const allowWebSearch = PROXY_ALLOW_WEB_SEARCH;
     let chatId: string | null = null;
     const getChatId = async () => {
       if (!chatId) {
@@ -562,7 +566,7 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
       return chatId;
     };
 
-    const tools = rawTools;
+    const tools = allowWebSearch ? rawTools : rawTools.filter((tool: any) => !isNetworkTool(tool));
 
     if (toolChoice === "none") {
       tools.length = 0;
@@ -605,10 +609,9 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
       hasToolResult = true;
       toolResultCount = Math.max(toolResultCount, maxToolLoops);
     }
-    const toolRegistry = buildToolRegistry(tools);
+    const toolRegistry = buildToolRegistry(rawTools);
     const bodyFeatures = body?.features && typeof body.features === "object" ? body.features : {};
     const featureOverrides: Record<string, unknown> = { ...bodyFeatures };
-    const allowWebSearch = PROXY_ALLOW_WEB_SEARCH;
     const enableThinking =
       typeof body?.enable_thinking === "boolean"
         ? body.enable_thinking

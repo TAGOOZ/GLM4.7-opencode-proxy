@@ -2,6 +2,7 @@ export const DEFAULT_MODEL = "glm-4.7";
 
 export const PROXY_DEBUG = process.env.PROXY_DEBUG === "1";
 export const PROXY_NEW_CHAT_PER_REQUEST = process.env.PROXY_NEW_CHAT_PER_REQUEST === "1";
+// Network tools (webfetch/web_search) are blocked by default. Set to 1 to allow.
 export const PROXY_ALLOW_WEB_SEARCH = process.env.PROXY_ALLOW_WEB_SEARCH === "1";
 // Networked shell commands are blocked by default. Set to 1 to allow commands like curl/wget/git clone/npm install.
 export const PROXY_ALLOW_NETWORK = process.env.PROXY_ALLOW_NETWORK === "1";

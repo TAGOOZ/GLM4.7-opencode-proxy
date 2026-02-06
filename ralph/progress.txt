@@ -7,3 +7,5 @@
 - Simplified ralph-run-all to an AFK loop with fixed iterations and effort defaults.
 - #37: Hardened proxy run_shell validation with allowlist/denylist + network disabled by default (override via PROXY_ALLOW_NETWORK=1). Tests: npm --prefix ts_glm test.
   Files: ts_glm/src/proxy/constants.ts, ts_glm/src/proxy/handler.ts, ts_glm/src/proxy/tools/shellSafety.ts, ts_glm/tests/shell-safety.test.ts.
+- #38: Gated network tools (webfetch/web_search) behind PROXY_ALLOW_WEB_SEARCH=1 (filtered from tool prompt + blocked tool calls when disabled). Tests: npm --prefix ts_glm test.
+  Files: ts_glm/src/proxy/constants.ts, ts_glm/src/proxy/handler.ts, ts_glm/src/proxy/tools/registry.ts, ts_glm/tests/network-tools.test.ts.
