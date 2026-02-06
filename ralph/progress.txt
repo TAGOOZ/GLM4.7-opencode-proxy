@@ -27,3 +27,5 @@
   Files: ts_glm/src/proxy/handler.ts, ts_glm/src/proxy/messages.ts.
 - #23: Optimized context token estimation loops by caching per-message estimates within compactMessages and updating totals incrementally while dropping messages. Tests: npm --prefix ts_glm test.
   Files: ts_glm/src/proxy/context.ts, ts_glm/tests/context-compaction.test.ts.
+- #24: Reduced GLMClient stream parser string churn by scanning for newlines incrementally (avoids regex split arrays; preserves partial buffers). Added a chunked SSE regression test. Tests: npm --prefix ts_glm test.
+  Files: ts_glm/src/glmClient.ts, ts_glm/tests/stream-parser.test.ts.

@@ -548,9 +548,16 @@ export class GLMClient {
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split(/\r?\n/);
-      buffer = lines.pop() || "";
-      for (const line of lines) {
+
+      // Avoid regex splitting, which allocates a large array for long streams.
+      let start = 0;
+      while (true) {
+        const nl = buffer.indexOf("\n", start);
+        if (nl === -1) break;
+        let line = buffer.slice(start, nl);
+        if (line.endsWith("\r")) line = line.slice(0, -1);
+        start = nl + 1;
+
         if (!line.startsWith("data: ")) continue;
         const dataStr = line.slice(6).trim();
         if (debugStream) {
@@ -601,6 +608,8 @@ export class GLMClient {
           continue;
         }
       }
+
+      if (start > 0) buffer = buffer.slice(start);
     }
 
     for await (const chunk of emitChunks(parser.finalize())) {
