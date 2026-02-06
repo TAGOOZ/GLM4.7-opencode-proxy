@@ -2,6 +2,7 @@ import crypto from "crypto";
 import { DANGEROUS_COMMAND_PATTERNS, PROXY_DEBUG } from "../constants.js";
 import { findTool, normalizeArgsForTool, type ToolInfo } from "./registry.js";
 import { parseRawJson } from "./parse.js";
+import { isSensitivePath } from "./pathSafety.js";
 
 const extractCommand = (text: string): string | null => {
   const fence = text.match(/```(?:bash|sh)?\n([\s\S]+?)```/i);
@@ -229,24 +230,6 @@ const extractFilePath = (text: string): string | null => {
   if (token) return token;
   const pathToken = tokens.find((t) => /[\\/]/.test(t) || t.startsWith("~") || t.startsWith("."));
   return pathToken || null;
-};
-
-const isSensitivePath = (value: string): boolean => {
-  const normalized = value.replace(/\\/g, "/").toLowerCase();
-  const patterns = [
-    /(^|\/)\.ssh(\/|$)/,
-    /(^|\/)\.git(\/|$)/,
-    /(^|\/)\.env(\.|$|\/)/,
-    /(^|\/)\.npmrc($|\/)/,
-    /(^|\/)\.pypirc($|\/)/,
-    /(^|\/)\.netrc($|\/)/,
-    /(^|\/)id_rsa($|\/)/,
-    /(^|\/)id_ed25519($|\/)/,
-    /(^|\/)creds?[^\/]*$/i,
-    /(^|\/)credentials?[^\/]*$/i,
-    /(^|\/)[^\/]*key[^\/]*$/i,
-  ];
-  return patterns.some((pattern) => pattern.test(normalized));
 };
 
 const inferReadToolCall = (registry: Map<string, ToolInfo>, userText: string) => {

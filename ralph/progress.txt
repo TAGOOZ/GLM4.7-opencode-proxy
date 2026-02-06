@@ -9,3 +9,5 @@
   Files: ts_glm/src/proxy/constants.ts, ts_glm/src/proxy/handler.ts, ts_glm/src/proxy/tools/shellSafety.ts, ts_glm/tests/shell-safety.test.ts.
 - #38: Gated network tools (webfetch/web_search) behind PROXY_ALLOW_WEB_SEARCH=1 (filtered from tool prompt + blocked tool calls when disabled). Tests: npm --prefix ts_glm test.
   Files: ts_glm/src/proxy/constants.ts, ts_glm/src/proxy/handler.ts, ts_glm/src/proxy/tools/registry.ts, ts_glm/tests/network-tools.test.ts.
+- #36: Tightened proxy path safety by blocking absolute paths and reducing sensitive-path false positives (allow .env.example/.env.sample/.env.template/.env.dist; avoid matching "monkey"/"hockey" via overly-broad key substring). Tests: npm --prefix ts_glm test.
+  Files: ts_glm/src/proxy/handler.ts, ts_glm/src/proxy/tools/infer.ts, ts_glm/src/proxy/tools/pathSafety.ts, ts_glm/tests/path-safety.test.ts.

@@ -45,6 +45,7 @@ import {
 import { buildToolRegistry, findTool, isNetworkTool, isNetworkToolName, normalizeArgsForTool, type ToolInfo } from "./tools/registry.js";
 import { parseRawToolCalls, tryParseModelOutput, tryRepairPlannerOutput } from "./tools/parse.js";
 import { inferRecentFilePath } from "./tools/path.js";
+import { isSensitivePath, isUnsafePathInput } from "./tools/pathSafety.js";
 import { isProxyShellCommandAllowed } from "./tools/shellSafety.js";
 
 type ChatCompletionHandlerDeps = {
@@ -265,33 +266,6 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
   ) => {
     applyResponseHeaders(reply, stats);
     return reply.send(openaiContentResponse(content, model, buildUsage(promptTokens, content)));
-  };
-
-  const isUnsafePathInput = (input: string): boolean => {
-    const trimmed = input.trim();
-    if (!trimmed) return true;
-    if (trimmed.includes("\0")) return true;
-    if (trimmed.startsWith("~")) return true;
-    if (/(^|[\\/])\.\.(?:[\\/]|$)/.test(trimmed)) return true;
-    return false;
-  };
-
-  const isSensitivePath = (value: string): boolean => {
-    const normalized = value.replace(/\\/g, "/").toLowerCase();
-    const patterns = [
-      /(^|\/)\.ssh(\/|$)/,
-      /(^|\/)\.git(\/|$)/,
-      /(^|\/)\.env(\.|$|\/)/,
-      /(^|\/)\.npmrc($|\/)/,
-      /(^|\/)\.pypirc($|\/)/,
-      /(^|\/)\.netrc($|\/)/,
-      /(^|\/)id_rsa($|\/)/,
-      /(^|\/)id_ed25519($|\/)/,
-      /(^|\/)creds?[^\/]*$/i,
-      /(^|\/)credentials?[^\/]*$/i,
-      /(^|\/)[^\/]*key[^\/]*$/i,
-    ];
-    return patterns.some((pattern) => pattern.test(normalized));
   };
 
   const MAX_WRITE_CHARS = 200000;
