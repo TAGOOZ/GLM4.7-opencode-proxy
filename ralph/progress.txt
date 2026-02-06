@@ -33,3 +33,5 @@
   Files: web_wrapper/src/safety.ts, web_wrapper/src/tools.ts, web_wrapper/tests/run-shell.test.ts.
 - #26: Split proxy handler for maintainability by extracting tool-call/action guards into a dedicated module (no behavior change). Tests: npm --prefix ts_glm test.
   Files: ts_glm/src/proxy/handler.ts, ts_glm/src/proxy/handler/guards.ts.
+- #30: Split tool output parsing utilities by extracting JSON normalization, planner parsing, and tool-call parsing into focused modules (kept ts_glm/src/proxy/tools/parse.ts as a re-export barrel; no behavior change). Tests: npm --prefix ts_glm test; npm --prefix ts_glm run build.
+  Files: ts_glm/src/proxy/tools/parse.ts, ts_glm/src/proxy/tools/parseJson.ts, ts_glm/src/proxy/tools/parsePlanner.ts, ts_glm/src/proxy/tools/parseToolCalls.ts.
