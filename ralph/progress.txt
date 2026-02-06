@@ -25,3 +25,5 @@
   Files: ts_glm/src/proxy/handler.ts, ts_glm/src/proxy/messages.ts, ts_glm/tests/planner-retry-roundtrips.test.ts.
 - #22: Cached tool prompt rendering and removed redundant message conversion in the tool-result + history path (stats now match the prompt actually sent). Tests: npm --prefix ts_glm test.
   Files: ts_glm/src/proxy/handler.ts, ts_glm/src/proxy/messages.ts.
+- #23: Optimized context token estimation loops by caching per-message estimates within compactMessages and updating totals incrementally while dropping messages. Tests: npm --prefix ts_glm test.
+  Files: ts_glm/src/proxy/context.ts, ts_glm/tests/context-compaction.test.ts.

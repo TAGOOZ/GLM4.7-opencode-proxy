@@ -117,7 +117,25 @@ const compactMessages = (messages: GlmMessage[], config: ContextConfig) => {
   }
   const pinned = messages.slice(0, pinnedCount);
   const rest = messages.slice(pinnedCount);
-  let usedTokens = estimateMessagesTokens(messages);
+
+  // Within a single compaction pass we often re-estimate tokens while dropping messages.
+  // Cache per-message estimates and update totals incrementally to avoid repeated O(n) scans.
+  const tokenCache = new WeakMap<GlmMessage, number>();
+  const tokensFor = (msg: GlmMessage): number => {
+    const cached = tokenCache.get(msg);
+    if (cached !== undefined) return cached;
+    const value = estimateMessageTokens(msg);
+    tokenCache.set(msg, value);
+    return value;
+  };
+
+  let pinnedTokens = 0;
+  let usedTokens = 0;
+  for (let i = 0; i < messages.length; i += 1) {
+    const t = tokensFor(messages[i]);
+    usedTokens += t;
+    if (i < pinnedCount) pinnedTokens += t;
+  }
   const budgetThreshold = budgetTokens - config.safetyMargin;
 
   if (usedTokens <= budgetThreshold) {
@@ -138,8 +156,9 @@ const compactMessages = (messages: GlmMessage[], config: ContextConfig) => {
   let recent = rest.slice(-recentCount);
   const older = rest.slice(0, rest.length - recent.length);
 
-  let working = [...pinned, ...recent];
-  usedTokens = estimateMessagesTokens(working);
+  let recentTokens = 0;
+  for (const msg of recent) recentTokens += tokensFor(msg);
+  usedTokens = pinnedTokens + recentTokens;
   let summaryAdded = false;
   let droppedMessages = 0;
   let summaryMessage: GlmMessage | null = null;
@@ -147,20 +166,23 @@ const compactMessages = (messages: GlmMessage[], config: ContextConfig) => {
   if (older.length && usedTokens > budgetThreshold) {
     const summary = summarizeMessages(older, config.summaryMaxChars);
     summaryMessage = { role: "system", content: summary };
-    working = [...pinned, summaryMessage, ...recent];
-    usedTokens = estimateMessagesTokens(working);
+    usedTokens = pinnedTokens + tokensFor(summaryMessage) + recentTokens;
     summaryAdded = true;
     droppedMessages = older.length;
   }
 
-  while (working.length > 0 && usedTokens > budgetThreshold && recent.length > config.minRecentMessages) {
+  while (usedTokens > budgetThreshold && recent.length > config.minRecentMessages) {
+    const removed = recent[0];
+    const removedTokens = tokensFor(removed);
+    recentTokens -= removedTokens;
+    usedTokens -= removedTokens;
     recent = recent.slice(1);
-    working = summaryAdded && summaryMessage
-      ? [...pinned, summaryMessage, ...recent]
-      : [...pinned, ...recent];
-    usedTokens = estimateMessagesTokens(working);
     droppedMessages += 1;
   }
+
+  const working = summaryAdded && summaryMessage
+    ? [...pinned, summaryMessage, ...recent]
+    : [...pinned, ...recent];
 
   const remainingTokens = Math.max(0, budgetTokens - usedTokens);
   const stats: ContextStats = {
