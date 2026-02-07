@@ -10,9 +10,21 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from glm_cli.api_client import GLMClient
-from glm_cli.config_utils import load_token
+from glm_cli.config_utils import (
+    LEGACY_MUTATION_ENV,
+    LEGACY_TOOL_ENV,
+    legacy_tools_enabled,
+    load_token,
+)
 
 app = FastAPI()
+PY_LEGACY_TOOLS_ENABLED = legacy_tools_enabled()
+PY_LEGACY_MODE_NOTICE = (
+    "Python legacy proxy is read-only by default: tool calls are disabled. "
+    f"Set {LEGACY_MUTATION_ENV}=1 and {LEGACY_TOOL_ENV}=1 to re-enable at your own risk."
+)
+if not PY_LEGACY_TOOLS_ENABLED:
+    print(f"[glm_proxy] {PY_LEGACY_MODE_NOTICE}")
 
 
 def _get_client() -> GLMClient:
@@ -753,11 +765,17 @@ async def chat_completions(request: Request):
     body = await request.json()
     model = body.get("model") or "glm-4.7"
     messages = body.get("messages", [])
-    tools = body.get("tools", [])
+    incoming_tools = body.get("tools", [])
+    tools = incoming_tools if PY_LEGACY_TOOLS_ENABLED else []
     tool_choice = body.get("tool_choice")
     stream = bool(body.get("stream"))
     client = _get_client()
     chat_id = _ensure_proxy_chat(client)
+
+    if incoming_tools and not PY_LEGACY_TOOLS_ENABLED:
+        # Hard-disable tool execution path in legacy Python proxy.
+        # Requests still complete as plain chat responses.
+        tool_choice = "none"
 
     # If tool usage is explicitly disabled, skip tool handling
     if tool_choice == "none":
@@ -937,4 +955,12 @@ async def chat_completions(request: Request):
 
 @app.get("/")
 def root():
-    return {"status": "ok", "message": "GLM proxy is running"}
+    return {
+        "status": "ok",
+        "message": "GLM proxy is running",
+        "legacy_python_mode": {
+            "read_only": not PY_LEGACY_TOOLS_ENABLED,
+            "tools_enabled": PY_LEGACY_TOOLS_ENABLED,
+            "notice": PY_LEGACY_MODE_NOTICE if not PY_LEGACY_TOOLS_ENABLED else "",
+        },
+    }

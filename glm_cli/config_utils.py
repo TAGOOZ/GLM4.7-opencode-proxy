@@ -7,6 +7,8 @@ from typing import Dict
 
 CONFIG_DIR = Path.home() / ".config" / "glm-cli"
 CONFIG_FILE = CONFIG_DIR / "config.json"
+LEGACY_MUTATION_ENV = "GLM_PY_LEGACY_ENABLE_MUTATIONS"
+LEGACY_TOOL_ENV = "GLM_PY_LEGACY_ENABLE_TOOLS"
 
 
 def _dotenv_paths() -> list[Path]:
@@ -47,3 +49,26 @@ def load_token() -> str:
     if not token:
         raise RuntimeError("Missing GLM token. Run: glm config --token YOUR_TOKEN")
     return str(token)
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def legacy_mutations_enabled() -> bool:
+    """Whether legacy Python mutation/auth commands are enabled."""
+    load_dotenv()
+    return _env_bool(LEGACY_MUTATION_ENV, default=False)
+
+
+def legacy_tools_enabled() -> bool:
+    """
+    Whether legacy Python proxy tool-call emission is enabled.
+
+    Tool emission is always gated by legacy mutation mode.
+    """
+    load_dotenv()
+    return legacy_mutations_enabled() and _env_bool(LEGACY_TOOL_ENV, default=False)

@@ -267,7 +267,7 @@ cd ts_glm
 npm run start:proxy
 ```
 
-Or start the proxy (Python):
+Or start the proxy (Python, legacy read-only mode):
 
 ```bash
 source venv/bin/activate
@@ -280,7 +280,12 @@ Use `opencode.json` and select provider `glm-local`.
 
 ## Python (MVP / Legacy)
 
-The Python CLI/proxy is the original MVP. Use it if you need the older flow.
+The Python CLI/proxy is the original MVP and is now legacy.
+
+Default behavior is read-only:
+- Python proxy does not emit tool calls.
+- Python CLI mutation/auth commands are blocked (`config`, `login`, `new`, `chat`, `interactive`).
+- Read-style commands remain available (`chats`, `whoami`).
 
 ```bash
 cd GLM4.7-opencode-proxy
@@ -289,18 +294,24 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Python CLI examples:
+Python CLI examples (read-only by default):
 
 ```bash
-python -m glm_cli.cli config --token "YOUR_TOKEN"
-python -m glm_cli.cli login
 python -m glm_cli.cli chats
+python -m glm_cli.cli whoami
 ```
 
 Python proxy:
 
 ```bash
 python3 -m uvicorn glm_proxy.server:app --host 127.0.0.1 --port 8787
+```
+
+Temporary legacy override (not recommended):
+
+```bash
+export GLM_PY_LEGACY_ENABLE_MUTATIONS=1
+export GLM_PY_LEGACY_ENABLE_TOOLS=1
 ```
 
 ## License

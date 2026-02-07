@@ -14,10 +14,31 @@ from rich.text import Text
 from rich.table import Table
 
 from .api_client import GLMClient
-from .config_utils import CONFIG_DIR, load_config, load_token, save_config
+from .config_utils import (
+    CONFIG_DIR,
+    LEGACY_MUTATION_ENV,
+    legacy_mutations_enabled,
+    load_config,
+    load_token,
+    save_config,
+)
 from .jwt_utils import decode_jwt_payload
 
 console = Console()
+
+
+def _require_legacy_mutations(command_name: str) -> None:
+    if legacy_mutations_enabled():
+        return
+    console.print(
+        (
+            "[red]Blocked:[/red] "
+            f"'{command_name}' is disabled in legacy Python mode.\n"
+            "This path is read-only by default.\n"
+            f"To override temporarily: export {LEGACY_MUTATION_ENV}=1"
+        )
+    )
+    sys.exit(2)
 
 
 def _save_env_token(token: str) -> None:
@@ -84,6 +105,7 @@ def cli():
 @click.option("--token", "-t", required=True, help="Authentication token from chat.z.ai")
 def config(token: str):
     """Configure authentication token"""
+    _require_legacy_mutations("config")
     cfg = load_config()
     cfg["token"] = token
     save_config(cfg)
@@ -135,6 +157,7 @@ def chats(page: int):
 @click.option("--model", "-m", default="glm-4.7", help="Model to use")
 def new(title: str, model: str):
     """Create a new chat"""
+    _require_legacy_mutations("new")
     client = get_client()
     
     try:
@@ -154,6 +177,7 @@ def new(title: str, model: str):
 @click.option("--check", is_flag=True, help="Validate saved token and exit")
 def login(headless: bool, timeout: int, check: bool):
     """Log in via browser (Google OAuth) and save the token"""
+    _require_legacy_mutations("login")
     if check:
         try:
             client = get_client()
@@ -219,6 +243,7 @@ def chat(chat_id: str, message: str, no_thinking: bool, signature: str, timestam
     For manual signature mode, capture these from browser DevTools and provide all three:
     --signature, --timestamp, and --request-id
     """
+    _require_legacy_mutations("chat")
     client = get_client()
     
     messages = [{"role": "user", "content": message}]
@@ -283,6 +308,7 @@ def chat(chat_id: str, message: str, no_thinking: bool, signature: str, timestam
 @click.option("--model", "-m", default="glm-4.7", help="Model to use")
 def interactive(chat_id: Optional[str], model: str):
     """Start an interactive conversation"""
+    _require_legacy_mutations("interactive")
     client = get_client()
     
     # Create new chat if not provided

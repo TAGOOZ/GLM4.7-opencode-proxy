@@ -9,7 +9,7 @@ This document provides guidance on using the OpenCode CLI with the GLM 4.7 proxy
 npm install -g @opencode-ai/opencode
 ```
 
-2. Start the GLM proxy server (TypeScript is recommended; Python is legacy):
+2. Start the GLM proxy server (TypeScript is recommended; Python is legacy read-only by default):
 ```bash
 # TypeScript proxy
 cd ts_glm
@@ -19,6 +19,12 @@ npm run start:proxy
 source venv/bin/activate
 python3 -m uvicorn glm_proxy.server:app --host 127.0.0.1 --port 8787
 ```
+
+Python legacy notes:
+- Tool-call emission is disabled by default.
+- To re-enable legacy mutation/tool behavior (not recommended):
+  - `export GLM_PY_LEGACY_ENABLE_MUTATIONS=1`
+  - `export GLM_PY_LEGACY_ENABLE_TOOLS=1`
 
 3. Ensure `opencode.json` in the root directory points to your local proxy (it should already be configured).
 
