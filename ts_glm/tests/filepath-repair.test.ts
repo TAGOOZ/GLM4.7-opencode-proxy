@@ -1,8 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { createChatCompletionHandler } from "../src/proxy/handler.js";
-
 const makeClient = (content: string) => {
   return {
     async getCurrentMessageId() {
@@ -55,6 +53,8 @@ const TOOLS = [
 ] as any[];
 
 const runProxy = async (glmResponseText: string, messages: any[]) => {
+  process.env.PROXY_STRIP_HISTORY = "0";
+  const { createChatCompletionHandler } = await import("../src/proxy/handler.js");
   const handler = createChatCompletionHandler({
     client: makeClient(glmResponseText),
     ensureChat: async () => "chat_1",
@@ -106,4 +106,3 @@ test("planner write without path is blocked (no heuristic mutations)", async () 
   assert.equal(payload?.choices?.[0]?.message?.tool_calls, undefined);
   assert.equal(payload?.choices?.[0]?.message?.content, "Blocked unsafe tool call (missing_path).");
 });
-

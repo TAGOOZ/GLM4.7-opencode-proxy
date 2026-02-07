@@ -20,6 +20,7 @@ import {
   PROXY_TEST_MODE,
   PROXY_TOOL_LOOP_LIMIT,
   PROXY_USE_GLM_HISTORY,
+  PROXY_STRIP_HISTORY,
   PROXY_HISTORY_MAX_MESSAGES,
   PROXY_ALLOW_USER_HEURISTICS,
   READ_LIKE_WITH_FILE_REGEX,
@@ -332,6 +333,11 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
     }
     const guard = validateToolCalls(boundedToolCalls, source, registry);
     if (!guard.ok) {
+      if (guard.confirmationToolCalls && guard.confirmationToolCalls.length > 0) {
+        const confirmUsage = buildToolUsage(promptTokens, guard.confirmationToolCalls);
+        applyResponseHeaders(reply, stats);
+        return sendToolCalls(reply, guard.confirmationToolCalls, model, stream, headers, confirmUsage);
+      }
       const content = `Blocked unsafe tool call (${guard.reason}).`;
       if (stream) {
         return sendStreamContent(reply, content, model, stats, promptTokens);
@@ -386,6 +392,27 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
 
     const tools = allowWebSearch ? rawTools : rawTools.filter((tool: any) => !isNetworkTool(tool));
 
+    const hasAskQuestionTool = tools.some((tool: any) => {
+      const fn = tool?.function || {};
+      const name = String(fn.name || tool?.name || "");
+      return name.toLowerCase().replace(/[_-]/g, "") === "askquestion";
+    });
+    if (!hasAskQuestionTool) {
+      tools.push({
+        function: {
+          name: "askquestion",
+          description: "Ask the user for confirmation before a dangerous action.",
+          parameters: {
+            type: "object",
+            properties: {
+              question: { type: "string" },
+            },
+            required: ["question"],
+          },
+        },
+      });
+    }
+
     if (toolChoice === "none") {
       tools.length = 0;
     }
@@ -419,6 +446,22 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
         { role: "tool", name: "test_tool", content: "synthetic tool result" },
       ];
     }
+    if (PROXY_STRIP_HISTORY) {
+      const hasToolMessages = sanitizedMessages.some((msg: any) => msg?.role === "tool" || msg?.tool_call_id);
+      if (!hasToolMessages) {
+        const systemMessages = sanitizedMessages.filter((msg: any) => msg?.role === "system");
+        const lastUserMessage = (() => {
+          for (let i = sanitizedMessages.length - 1; i >= 0; i -= 1) {
+            if (sanitizedMessages[i]?.role === "user") return sanitizedMessages[i];
+          }
+          return null;
+        })();
+        sanitizedMessages = [
+          ...systemMessages,
+          ...(lastUserMessage ? [lastUserMessage] : []),
+        ];
+      }
+    }
     const last = sanitizedMessages[sanitizedMessages.length - 1];
     let hasToolResult = Boolean(last && (last.role === "tool" || last.tool_call_id));
     let toolResultCount = sanitizedMessages.filter((m: any) => m.role === "tool" || m.tool_call_id).length;
@@ -427,7 +470,7 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
       hasToolResult = true;
       toolResultCount = Math.max(toolResultCount, maxToolLoops);
     }
-    const toolRegistry = buildToolRegistry(rawTools);
+    const toolRegistry = buildToolRegistry(tools);
     const bodyFeatures = body?.features && typeof body.features === "object" ? body.features : {};
     const featureOverrides: Record<string, unknown> = { ...bodyFeatures };
     const enableThinking =

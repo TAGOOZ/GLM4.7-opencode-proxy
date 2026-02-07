@@ -177,6 +177,37 @@ const normalizeArgsForTool = (toolInfo: ToolInfo | null, args: Record<string, un
         normalized.format = "text";
       }
     }
+    const normalizedName = normalizeToolName(toolName);
+    if (normalizedName === "todowrite") {
+      const rawTodos = (normalized as Record<string, unknown>).todos;
+      if (Array.isArray(rawTodos)) {
+        const todos = rawTodos.map((item) => {
+          const base = item && typeof item === "object" ? { ...(item as Record<string, unknown>) } : {};
+          const content =
+            typeof base.content === "string"
+              ? base.content
+              : typeof base.text === "string"
+                ? base.text
+                : typeof base.title === "string"
+                  ? base.title
+                  : "";
+          const status =
+            typeof base.status === "string"
+              ? base.status
+              : typeof base.state === "string"
+                ? base.state
+                : "todo";
+          const priority =
+            typeof base.priority === "string"
+              ? base.priority
+              : typeof base.importance === "string"
+                ? base.importance
+                : "medium";
+          return { ...base, content, status, priority };
+        });
+        normalized.todos = todos;
+      }
+    }
   }
   return normalized;
 };

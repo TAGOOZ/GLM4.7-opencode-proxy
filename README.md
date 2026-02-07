@@ -79,7 +79,7 @@ Thinking is enabled by default. You can still toggle it explicitly:
 }
 ```
 
-Enable web search (when allowed):
+Enable/disable web search (allowed by default):
 
 ```json
 {
@@ -90,10 +90,10 @@ Enable web search (when allowed):
 }
 ```
 
-To allow web search through the proxy, set:
+To block web search through the proxy, set:
 
 ```bash
-export PROXY_ALLOW_WEB_SEARCH=1
+export PROXY_ALLOW_WEB_SEARCH=0
 ```
 
 ### TUI Quick Toggles
@@ -112,13 +112,24 @@ OpenCode renders `reasoning_content` in a dedicated thinking panel. The proxy no
 
 ## Security Model (Proxy + Runner)
 
-This repo follows a strict OpenCode-style safety model:
+This repo follows an OpenCode-style safety model with agentic defaults:
 
-- **Mutations require validated planner JSON.** Heuristics and raw tool calls are discovery-only.
+- **Mutations require validated planner JSON unless explicit/raw mutation flags are enabled (enabled by default).**
 - **Heuristic allowlist:** `read`, `list/glob`, `grep/search` only.
 - **Runner is the security boundary:** repo-root jail, sensitive-path denylist, output redaction, and size caps.
 **Confirmations are handled by the client** (e.g., OpenCode permission prompts).
 This proxy does not require custom tool arguments for approvals.
+
+Additional proxy safety toggles:
+
+- `PROXY_ALLOW_WEB_SEARCH=0` block webfetch/web_search tools (default on).
+- `PROXY_ALLOW_NETWORK=0` block networked shell commands (default on).
+- `PROXY_ALLOW_EXPLICIT_MUTATIONS=0` block mutation tools from explicit tool calls.
+- `PROXY_ALLOW_RAW_MUTATIONS=0` block mutation tools from raw tool_calls.
+- `PROXY_ALLOW_ANY_COMMAND=0` enforce shell allowlist/denylist checks.
+- `PROXY_CONFIRM_DANGEROUS_COMMANDS=0` disable confirmation flow for dangerous commands and deletes.
+- `PROXY_NEW_CHAT_PER_REQUEST=0` reuse a single GLM chat across requests.
+- `PROXY_STRIP_HISTORY=0` keep full incoming message history (default keeps only latest user turn unless tool messages are present).
 
 Examples:
 
@@ -134,7 +145,7 @@ Examples:
 {"tool":"run_shell","args":{"command":"mv foo bar"}}
 ```
 
-Note: `rm` is not in the default allowlist; enabling deletes requires an explicit allowlist change.
+Note: `rm` is not in the default allowlist if you enable allowlist checks.
 
 ## Quick Start (Token)
 
