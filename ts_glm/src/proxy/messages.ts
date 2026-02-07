@@ -2,10 +2,12 @@ import { GLMClient } from "../glmClient.js";
 import { SYSTEM_PROMPT } from "web-wrapper-protocol";
 import { truncateToolContent } from "./context.js";
 import {
+  PROXY_DEBUG,
   PROXY_TOOL_PROMPT_EXTRA_SYSTEM_MAX_CHARS,
   PROXY_TOOL_PROMPT_INCLUDE_SCHEMA,
   PROXY_TOOL_PROMPT_SCHEMA_MAX_CHARS,
 } from "./constants.js";
+import { debugDump } from "./debug.js";
 
 const truncateText = (text: string, maxChars: number): string => {
   if (!text) return "";
@@ -254,10 +256,41 @@ const collectGlmResponse = async (
     parentMessageId?: string | null;
   },
 ) => {
+  const detailed = await collectGlmResponseDetailed(client, chatId, glmMessages, options);
+  if (detailed.thinking && options?.includeThinking !== false) {
+    return `<think>\n${detailed.thinking}\n</think>\n\n${detailed.content}`.trim();
+  }
+  return detailed.content;
+};
+
+const collectGlmResponseDetailed = async (
+  client: GLMClient,
+  chatId: string,
+  glmMessages: { role: string; content: string }[],
+  options?: {
+    enableThinking?: boolean;
+    features?: Record<string, unknown>;
+    includeHistory?: boolean;
+    parentMessageId?: string | null;
+  },
+): Promise<{ content: string; thinking: string }> => {
   let content = "";
   let thinking = "";
   const includeHistory = options?.includeHistory ?? false;
   let parentId: string | null | undefined = options?.parentMessageId;
+  if (PROXY_DEBUG) {
+    debugDump("glm_sendMessage_options", {
+      chatId,
+      includeHistory,
+      enableThinking: Boolean(options?.enableThinking),
+      parentMessageId: parentId === undefined ? "[auto]" : parentId,
+      messageCount: glmMessages.length,
+      messagesPreview: glmMessages.slice(0, 6).map((m) => ({
+        role: m.role,
+        content: m.content.slice(0, 200),
+      })),
+    });
+  }
   // If we're already including chat history in the completion request, GLMClient will fetch it
   // internally and can resolve the current parent ID from that same request. Avoid the redundant
   // preflight getChat() call in that case.
@@ -283,15 +316,13 @@ const collectGlmResponse = async (
       thinking += chunk.data;
     }
   }
-  if (thinking && options?.includeThinking !== false) {
-    return `<think>\n${thinking.trim()}\n</think>\n\n${content.trim()}`.trim();
-  }
-  return content.trim();
+  return { content: content.trim(), thinking: thinking.trim() };
 };
 
 export {
   buildToolPrompt,
   collectGlmResponse,
+  collectGlmResponseDetailed,
   convertMessages,
   stripDirectivesFromContent,
 };

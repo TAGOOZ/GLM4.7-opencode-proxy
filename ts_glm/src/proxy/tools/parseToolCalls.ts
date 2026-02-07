@@ -7,16 +7,51 @@ import {
   parseRawJson,
 } from "./parseJson.js";
 
+const asPlainObject = (value: unknown): Record<string, unknown> | null => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+};
+
 const parseArgsBlock = (block: string | null): Record<string, unknown> | null => {
   if (!block) return null;
   try {
     const normalized = normalizeJsonCandidate(block);
     const parsed = JSON.parse(normalized);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
+    const obj = asPlainObject(parsed);
+    if (obj) return obj;
+  } catch {
+    // ignore
+  }
+  return null;
+};
+
+const parseArgsString = (raw: string): Record<string, unknown> | null => {
+  const trimmed = String(raw || "").trim();
+  if (!trimmed) return {};
+
+  const direct = parseArgsBlock(trimmed);
+  if (direct) return direct;
+
+  try {
+    const decoded = JSON.parse(trimmed);
+    const obj = asPlainObject(decoded);
+    if (obj) return obj;
+    if (typeof decoded === "string") {
+      const nested = parseArgsBlock(decoded);
+      if (nested) return nested;
     }
   } catch {
     // ignore
+  }
+
+  const reparsed = parseRawJson(trimmed);
+  const reparsedObj = asPlainObject(reparsed);
+  if (reparsedObj) return reparsedObj;
+
+  const objectBlock = extractJsonBlock(trimmed, "{", "}");
+  if (objectBlock) {
+    const blockParsed = parseArgsBlock(objectBlock);
+    if (blockParsed) return blockParsed;
   }
   return null;
 };
@@ -40,21 +75,21 @@ const extractArgumentsFromFunctionText = (text: string): Record<string, unknown>
     const end = findStringEnd(text, pos);
     if (end === -1) return {};
     const rawString = text.slice(pos + 1, end);
-    const trimmed = rawString.trim();
-    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-      const parsed = parseArgsBlock(trimmed);
-      if (parsed) return parsed;
-    }
+    const parsedRaw = parseArgsString(rawString);
+    if (parsedRaw) return parsedRaw;
     try {
-      const escaped = rawString.replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
-      const decoded = JSON.parse(`"${escaped}"`);
-      const maybeJson = String(decoded).trim();
-      if (maybeJson.startsWith("{") || maybeJson.startsWith("[")) {
-        const parsed = parseArgsBlock(maybeJson);
-        if (parsed) return parsed;
-      }
+      const decoded = JSON.parse(`"${rawString}"`);
+      const parsedDecoded = parseArgsString(String(decoded));
+      if (parsedDecoded) return parsedDecoded;
     } catch {
-      // ignore
+      try {
+        const escaped = rawString.replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
+        const decoded = JSON.parse(`"${escaped}"`);
+        const parsedDecoded = parseArgsString(String(decoded));
+        if (parsedDecoded) return parsedDecoded;
+      } catch {
+        // ignore
+      }
     }
   }
   return {};
@@ -129,23 +164,22 @@ const parseRawToolCalls = (raw: string, registry: Map<string, ToolInfo>) => {
     if (!rawName) continue;
     const toolInfo = findTool(registry, rawName);
     if (!toolInfo) continue;
-    let args = func?.arguments ?? call.arguments ?? {};
-    if (typeof args === "string") {
-      try {
-        args = JSON.parse(args);
-      } catch {
-        const reparsed = parseRawJson(args);
-        if (reparsed && typeof reparsed === "object") {
-          args = reparsed;
-        } else {
-          args = {};
-        }
+    const rawArgs = func?.arguments ?? call.arguments ?? {};
+    let serializedArgs = "{}";
+    if (typeof rawArgs === "string") {
+      const parsedArgs = parseArgsString(rawArgs);
+      if (parsedArgs) {
+        const normalizedArgs = normalizeArgsForTool(toolInfo, parsedArgs);
+        serializedArgs = JSON.stringify(normalizedArgs);
+      } else {
+        // Preserve malformed raw arguments so guard validation can block explicitly
+        // instead of silently coercing to {} and replaying invalid calls.
+        serializedArgs = rawArgs;
       }
+    } else if (asPlainObject(rawArgs)) {
+      const normalizedArgs = normalizeArgsForTool(toolInfo, rawArgs as Record<string, unknown>);
+      serializedArgs = JSON.stringify(normalizedArgs);
     }
-    if (!args || typeof args !== "object") {
-      args = {};
-    }
-    args = normalizeArgsForTool(toolInfo, args as Record<string, unknown>);
     const toolName = toolInfo.tool.function?.name || toolInfo.tool.name || rawName;
     toolCalls.push({
       id: `call_${crypto.randomUUID().slice(0, 8)}`,
@@ -153,7 +187,7 @@ const parseRawToolCalls = (raw: string, registry: Map<string, ToolInfo>) => {
       type: "function",
       function: {
         name: toolName,
-        arguments: JSON.stringify(args),
+        arguments: serializedArgs,
       },
     });
   }

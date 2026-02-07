@@ -2,6 +2,7 @@ import crypto from "crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { GLMClient } from "../glmClient.js";
 import { extractFirstJsonObject, repairPlannerJson } from "web-wrapper-protocol";
+import { debugDump, debugLog, safeJson, truncate, writeDebugDump } from "./debug.js";
 import {
   ACTIONABLE_KEYWORDS,
   DEFAULT_MODEL,
@@ -33,8 +34,12 @@ import {
   getContextConfig,
   type ContextStats,
 } from "./context.js";
-import { collectGlmResponse, convertMessages, stripDirectivesFromContent } from "./messages.js";
-import { openaiContentResponse, openaiToolResponse, sendToolCalls, streamContent } from "./openai.js";
+import {
+  collectGlmResponseDetailed,
+  convertMessages,
+  stripDirectivesFromContent,
+} from "./messages.js";
+import { openaiContentResponse, sendToolCalls, streamContent } from "./openai.js";
 import {
   applyMutationActionBoundary,
   isRawToolCallsAllowed,
@@ -54,6 +59,11 @@ import {
   normalizeArgsForTool,
   type ToolInfo,
 } from "./tools/registry.js";
+import {
+  filterPlannerActions,
+  filterPlannerTools,
+  shouldAllowTodoTools,
+} from "./tools/policy.js";
 import { parseRawToolCalls, tryParseModelOutput, tryRepairPlannerOutput } from "./tools/parse.js";
 import { inferRecentFilePath } from "./tools/path.js";
 
@@ -63,12 +73,56 @@ type ChatCompletionHandlerDeps = {
   resetChat: () => void;
 };
 
+type RawDispatchContext = {
+  lastUser: string;
+  hasToolResult: boolean;
+  allowTodoWrite: boolean;
+  recentFilePath: string | null;
+};
+
+type PreparedRawToolCalls = {
+  toolCalls: any[];
+  signature: string;
+};
+
 const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatCompletionHandlerDeps) => {
   const contextConfig = getContextConfig();
   const useGlmHistory = PROXY_USE_GLM_HISTORY;
   const alwaysSendSystem = PROXY_ALWAYS_SEND_SYSTEM;
   let lastMessages: any[] = [];
   let lastSignature = "";
+  let lastRawDispatchSignature = "";
+  let lastRawDispatchUser = "";
+  const pendingConfirmations = new Map<
+    string,
+    { toolCalls: any[]; blockedReason: string; createdAt: number }
+  >();
+  const PENDING_CONFIRM_TTL_MS = 10 * 60 * 1000;
+
+  const previewMessage = (msg: any) => {
+    const role = msg?.role;
+    if (role === "tool") {
+      const content = typeof msg?.content === "string" ? msg.content : safeJson(msg?.content);
+      return {
+        role,
+        tool_call_id: msg?.tool_call_id,
+        content: truncate(content, 400),
+      };
+    }
+    const content = extractContentText(msg?.content);
+    return {
+      role,
+      name: msg?.name,
+      content: truncate(content || "", 400),
+      tool_calls: Array.isArray(msg?.tool_calls)
+        ? msg.tool_calls.map((c: any) => ({
+            id: c?.id,
+            type: c?.type,
+            name: c?.function?.name,
+          }))
+        : undefined,
+    };
+  };
 
   const extractTestDirectives = (content: string) => {
     const lines = content.split(/\r?\n/);
@@ -263,12 +317,13 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
     model: string,
     stats?: ContextStats,
     promptTokens?: number,
+    reasoningContent?: string,
   ) => {
     const headers = buildStreamHeaders(stats);
     reply.raw.writeHead(200, { "Content-Type": "text/event-stream", ...headers });
     const usage =
       promptTokens !== undefined ? buildUsage(promptTokens, content) : undefined;
-    reply.raw.write(streamContent(content, model, usage));
+    reply.raw.write(streamContent(content, model, usage, reasoningContent));
     return reply.raw.end();
   };
 
@@ -279,6 +334,7 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
     promptTokens: number,
     stats?: ContextStats,
   ) => {
+    debugDump("response_content", { model, content: truncate(content || "", 2000) });
     applyResponseHeaders(reply, stats);
     return reply.send(openaiContentResponse(content, model, buildUsage(promptTokens, content)));
   };
@@ -296,6 +352,186 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
     return null;
   };
 
+  const normalizeToolName = (value: unknown) => String(value || "").toLowerCase().replace(/[_-]/g, "");
+
+  const EDIT_TOOL_NAMES = new Set(["edit", "editfile", "applypatch", "patch"]);
+
+  const sortJsonValue = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(sortJsonValue);
+    if (!value || typeof value !== "object") return value;
+    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
+      a.localeCompare(b),
+    );
+    const out: Record<string, unknown> = {};
+    for (const [key, nested] of entries) out[key] = sortJsonValue(nested);
+    return out;
+  };
+
+  const stableStringify = (value: unknown): string => {
+    try {
+      return JSON.stringify(sortJsonValue(value));
+    } catch {
+      return "";
+    }
+  };
+
+  const parseToolCallArgs = (call: any): Record<string, unknown> | null => {
+    const rawArgs = call?.function?.arguments ?? call?.arguments ?? {};
+    if (rawArgs && typeof rawArgs === "object") {
+      return rawArgs as Record<string, unknown>;
+    }
+    if (typeof rawArgs !== "string") return {};
+    try {
+      const parsed = JSON.parse(rawArgs);
+      if (parsed && typeof parsed === "object") return parsed as Record<string, unknown>;
+      return {};
+    } catch {
+      return null;
+    }
+  };
+
+  const getFirstStringArg = (args: Record<string, unknown>, keys: string[]): string | null => {
+    for (const key of keys) {
+      const value = args[key];
+      if (typeof value === "string") return value;
+    }
+    return null;
+  };
+
+  const isNoOpEditArgs = (toolName: string, args: Record<string, unknown>): boolean => {
+    if (!EDIT_TOOL_NAMES.has(normalizeToolName(toolName))) return false;
+    const oldString = getFirstStringArg(args, ["oldString", "old_string", "oldText", "old_text"]);
+    const newString = getFirstStringArg(args, ["newString", "new_string", "newText", "new_text"]);
+    return oldString !== null && newString !== null && oldString === newString;
+  };
+
+  const buildToolCallSignature = (call: any): string | null => {
+    const toolName = normalizeToolName(call?.function?.name || call?.name || "");
+    if (!toolName) return null;
+    const args = parseToolCallArgs(call);
+    if (args === null) return null;
+    const payload = stableStringify(args);
+    if (!payload) return null;
+    return `${toolName}|${payload}`;
+  };
+
+  const prepareRawToolCalls = (
+    rawCalls: any[],
+    context: RawDispatchContext,
+    registry?: Map<string, ToolInfo>,
+  ): PreparedRawToolCalls | null => {
+    if (!Array.isArray(rawCalls) || rawCalls.length === 0) return null;
+    const seen = new Set<string>();
+    const keptCalls: any[] = [];
+    const signatures: string[] = [];
+    let droppedTodoWrite = 0;
+    let droppedNoOpEdits = 0;
+    let droppedDuplicates = 0;
+    let repairedMissingPath = 0;
+
+    for (const call of rawCalls) {
+      const toolName = normalizeToolName(call?.function?.name || call?.name || "");
+      if (!toolName) continue;
+      if (toolName === "todowrite" && !context.allowTodoWrite) {
+        droppedTodoWrite += 1;
+        continue;
+      }
+
+      const args = parseToolCallArgs(call);
+      if (args && isNoOpEditArgs(toolName, args)) {
+        droppedNoOpEdits += 1;
+        continue;
+      }
+      if (args && context.hasToolResult && context.recentFilePath) {
+        const isPathRepairableTool =
+          toolName === "read" ||
+          toolName === "readfile" ||
+          toolName === "write" ||
+          toolName === "writefile" ||
+          toolName === "edit" ||
+          toolName === "editfile" ||
+          toolName === "applypatch" ||
+          toolName === "patch";
+        const hasPath =
+          typeof args.path === "string" && args.path.trim().length > 0
+            ? true
+            : typeof (args as any).filePath === "string" && String((args as any).filePath).trim().length > 0
+              ? true
+              : typeof (args as any).file_path === "string" && String((args as any).file_path).trim().length > 0
+                ? true
+                : false;
+        if (isPathRepairableTool && !hasPath) {
+          const resolvedName = String(call?.function?.name || call?.name || "");
+          const toolInfo = registry ? findTool(registry, resolvedName || toolName) : null;
+          const pathKey = toolInfo?.argKeys?.includes("filePath")
+            ? "filePath"
+            : toolInfo?.argKeys?.includes("file_path")
+              ? "file_path"
+              : toolInfo?.argKeys?.includes("path")
+                ? "path"
+                : "path";
+          (args as any)[pathKey] = context.recentFilePath;
+          if (call?.function && typeof call.function === "object") {
+            call.function.arguments = JSON.stringify(args);
+          } else if (call && typeof call === "object") {
+            call.arguments = JSON.stringify(args);
+          }
+          repairedMissingPath += 1;
+        }
+      }
+
+      const signature = buildToolCallSignature(call);
+      if (signature && seen.has(signature)) {
+        droppedDuplicates += 1;
+        continue;
+      }
+      if (signature) {
+        seen.add(signature);
+        signatures.push(signature);
+      }
+      keptCalls.push(call);
+    }
+
+    if (PROXY_DEBUG && (droppedTodoWrite || droppedNoOpEdits || droppedDuplicates || repairedMissingPath)) {
+      console.log(
+        "proxy_debug raw_preprocess:",
+        JSON.stringify({
+          droppedTodoWrite,
+          droppedNoOpEdits,
+          droppedDuplicates,
+          repairedMissingPath,
+          inputCount: rawCalls.length,
+          keptCount: keptCalls.length,
+        }),
+      );
+    }
+
+    if (keptCalls.length === 0) return null;
+    const batchSignature = signatures.join("||");
+    if (
+      context.hasToolResult &&
+      context.lastUser &&
+      batchSignature &&
+      batchSignature === lastRawDispatchSignature &&
+      context.lastUser === lastRawDispatchUser
+    ) {
+      if (PROXY_DEBUG) {
+        console.log(
+          "proxy_debug repeated_raw_suppressed:",
+          JSON.stringify({
+            signature: truncate(batchSignature, 240),
+          }),
+        );
+      }
+      return null;
+    }
+
+    return {
+      toolCalls: keptCalls,
+      signature: batchSignature,
+    };
+  };
+
   const guardAndSendToolCalls = (
     reply: FastifyReply,
     toolCalls: any[],
@@ -307,6 +543,8 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
     stats?: ContextStats,
     source: "planner" | "raw" | "heuristic" | "explicit" = "planner",
     registry?: Map<string, ToolInfo>,
+    rawContext?: RawDispatchContext & { rawSignature?: string },
+    reasoningContent?: string,
   ) => {
     if (!registry) {
       const content = "Tool registry missing; cannot validate tool calls.";
@@ -333,10 +571,42 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
     }
     const guard = validateToolCalls(boundedToolCalls, source, registry);
     if (!guard.ok) {
+      debugDump("guard_block", {
+        source,
+        reason: guard.reason,
+        hasConfirmation: Boolean(guard.confirmationToolCalls?.length),
+        toolCalls: boundedToolCalls?.map((c: any) => ({
+          id: c?.id,
+          name: c?.function?.name || c?.name,
+        })),
+      });
       if (guard.confirmationToolCalls && guard.confirmationToolCalls.length > 0) {
+        if (guard.pendingConfirmation?.id) {
+          pendingConfirmations.set(guard.pendingConfirmation.id, {
+            toolCalls: guard.pendingConfirmation.toolCalls,
+            blockedReason: guard.pendingConfirmation.blockedReason,
+            createdAt: Date.now(),
+          });
+          debugDump("pending_confirmation_set", {
+            id: guard.pendingConfirmation.id,
+            blockedReason: guard.pendingConfirmation.blockedReason,
+            toolCalls: guard.pendingConfirmation.toolCalls?.map((c: any) => ({
+              id: c?.id,
+              name: c?.function?.name || c?.name,
+            })),
+          });
+        }
         const confirmUsage = buildToolUsage(promptTokens, guard.confirmationToolCalls);
         applyResponseHeaders(reply, stats);
-        return sendToolCalls(reply, guard.confirmationToolCalls, model, stream, headers, confirmUsage);
+        return sendToolCalls(
+          reply,
+          guard.confirmationToolCalls,
+          model,
+          stream,
+          headers,
+          confirmUsage,
+          reasoningContent,
+        );
       }
       const content = `Blocked unsafe tool call (${guard.reason}).`;
       if (stream) {
@@ -345,7 +615,144 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
       return sendContent(reply, content, model, promptTokens, stats);
     }
     applyResponseHeaders(reply, stats);
-    return sendToolCalls(reply, boundedToolCalls, model, stream, headers, boundedUsage);
+    if (source === "raw" && rawContext?.rawSignature) {
+      lastRawDispatchSignature = rawContext.rawSignature;
+      lastRawDispatchUser = rawContext.lastUser;
+    }
+    debugDump("response_tool_calls", {
+      model,
+      source,
+      toolCalls: boundedToolCalls.map((c: any) => ({
+        id: c?.id,
+        name: c?.function?.name || c?.name,
+        argumentsPreview:
+          typeof c?.function?.arguments === "string" ? truncate(c.function.arguments, 1200) : undefined,
+      })),
+    });
+    return sendToolCalls(
+      reply,
+      boundedToolCalls,
+      model,
+      stream,
+      headers,
+      boundedUsage,
+      reasoningContent,
+    );
+  };
+
+  const isAffirmativeConfirmation = (value: string): boolean => {
+    const text = (value || "").trim().toLowerCase();
+    if (!text) return false;
+    const isAffirmativeChoice = (choice: string): boolean => {
+      const normalized = choice.trim().toLowerCase();
+      if (!normalized) return false;
+      if (
+        [
+          "y",
+          "yes",
+          "true",
+          "ok",
+          "okay",
+          "proceed",
+          "proceed (recommended)",
+          "continue",
+          "confirm",
+          "approved",
+          "allow",
+          "1",
+        ].includes(normalized)
+      ) {
+        return true;
+      }
+      if (/^(yes|ok|okay|proceed|continue|confirm|approved|allow)\b/.test(normalized)) {
+        return true;
+      }
+      return false;
+    };
+    if (isAffirmativeChoice(text)) {
+      return true;
+    }
+    const answeredMatch = text.match(/=\s*"([^"]+)"/);
+    if (answeredMatch && isAffirmativeChoice(answeredMatch[1] || "")) {
+      return true;
+    }
+    if (/user has answered your questions:/i.test(text) && /proceed\s*\(recommended\)/i.test(text)) {
+      return true;
+    }
+    // Some UIs may return JSON.
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed === true) return true;
+      if (parsed && typeof parsed === "object") {
+        const ok = (parsed as any).ok ?? (parsed as any).confirmed ?? (parsed as any).confirm;
+        if (ok === true) return true;
+        const answer =
+          (parsed as any).answer ??
+          (parsed as any).selected ??
+          (parsed as any).selection ??
+          (parsed as any).value;
+        if (typeof answer === "string" && isAffirmativeChoice(answer)) {
+          return true;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return false;
+  };
+
+  const tryHandlePendingConfirmation = (
+    request: FastifyRequest,
+    reply: FastifyReply,
+  ): { handled: boolean } => {
+    // Best-effort cleanup.
+    const now = Date.now();
+    for (const [id, entry] of pendingConfirmations.entries()) {
+      if (now - entry.createdAt > PENDING_CONFIRM_TTL_MS) pendingConfirmations.delete(id);
+    }
+
+    const body = request.body as any;
+    const model = body.model || DEFAULT_MODEL;
+    const messages = Array.isArray(body.messages) ? body.messages : [];
+    if (!messages.length) return { handled: false };
+
+    const last = messages[messages.length - 1];
+    if (last?.role !== "tool") return { handled: false };
+    const toolCallId = String(last?.tool_call_id || last?.toolCallId || "").trim();
+    if (!toolCallId) return { handled: false };
+
+    const pending = pendingConfirmations.get(toolCallId);
+    if (!pending) return { handled: false };
+
+    pendingConfirmations.delete(toolCallId);
+    const content = typeof last?.content === "string" ? last.content : JSON.stringify(last?.content ?? "");
+    debugDump("confirmation_tool_result", {
+      tool_call_id: toolCallId,
+      content: truncate(content, 1200),
+    });
+    if (!isAffirmativeConfirmation(content)) {
+      debugDump("pending_confirmation_declined", { id: toolCallId, blockedReason: pending.blockedReason });
+      const stream = Boolean(body.stream);
+      if (stream) {
+        reply.raw.writeHead(200, { "Content-Type": "text/event-stream" });
+        reply.raw.write(streamContent("Cancelled.", model));
+        reply.raw.end();
+      } else {
+        reply.send(openaiContentResponse("Cancelled.", model));
+      }
+      return { handled: true };
+    }
+
+    // User approved: replay the blocked tool calls directly.
+    debugDump("pending_confirmation_approved", {
+      id: toolCallId,
+      blockedReason: pending.blockedReason,
+      toolCalls: pending.toolCalls?.map((c: any) => ({ id: c?.id, name: c?.function?.name || c?.name })),
+    });
+    const stream = Boolean(body.stream);
+    const headers: Record<string, string> = {};
+    sendToolCalls(reply, pending.toolCalls, model, stream, headers, undefined);
+    return { handled: true };
   };
 
   const detectUnknownToolFromUserJson = (
@@ -375,32 +782,61 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
   };
 
   const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply) => {
+    const requestId = crypto.randomUUID().slice(0, 8);
+    reply.header("x-proxy-request-id", requestId);
+    const confirmHandled = tryHandlePendingConfirmation(request, reply);
+    if (confirmHandled.handled) return;
     const body = request.body as any;
     const model = body.model || DEFAULT_MODEL;
     const messages = body.messages || [];
     const rawTools = Array.isArray(body.tools) ? body.tools : [];
     const stream = Boolean(body.stream);
     const toolChoice = body.tool_choice;
+    debugDump("request", {
+      requestId,
+      http: {
+        method: (request as any).method,
+        url: (request as any).url,
+        headers: (request as any).headers,
+      },
+      model,
+      stream,
+      toolChoice,
+      messageCount: Array.isArray(messages) ? messages.length : 0,
+      lastMessage: Array.isArray(messages) && messages.length ? previewMessage(messages[messages.length - 1]) : null,
+      tools: rawTools.map((t: any) => t?.function?.name || t?.name || "tool"),
+    });
+    await writeDebugDump("http_request", {
+      requestId,
+      method: (request as any).method,
+      url: (request as any).url,
+      headers: (request as any).headers,
+      body,
+    });
     const allowWebSearch = PROXY_ALLOW_WEB_SEARCH;
     let chatId: string | null = null;
     const getChatId = async () => {
       if (!chatId) {
         chatId = await ensureChat();
+        debugLog("request", requestId, "active_chat_id:", chatId);
       }
       return chatId;
     };
 
-    const tools = allowWebSearch ? rawTools : rawTools.filter((tool: any) => !isNetworkTool(tool));
+    let tools = allowWebSearch ? rawTools : rawTools.filter((tool: any) => !isNetworkTool(tool));
 
-    const hasAskQuestionTool = tools.some((tool: any) => {
+    // Prefer OpenCode's built-in `question` tool (if present). If missing, inject a minimal schema
+    // so the model can request confirmation for guarded actions.
+    const hasConfirmTool = tools.some((tool: any) => {
       const fn = tool?.function || {};
       const name = String(fn.name || tool?.name || "");
-      return name.toLowerCase().replace(/[_-]/g, "") === "askquestion";
+      const norm = name.toLowerCase().replace(/[_-]/g, "");
+      return norm === "question" || norm === "askquestion" || norm === "confirm";
     });
-    if (!hasAskQuestionTool) {
+    if (!hasConfirmTool) {
       tools.push({
         function: {
-          name: "askquestion",
+          name: "question",
           description: "Ask the user for confirmation before a dangerous action.",
           parameters: {
             type: "object",
@@ -465,11 +901,25 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
     const last = sanitizedMessages[sanitizedMessages.length - 1];
     let hasToolResult = Boolean(last && (last.role === "tool" || last.tool_call_id));
     let toolResultCount = sanitizedMessages.filter((m: any) => m.role === "tool" || m.tool_call_id).length;
-    const maxToolLoops = PROXY_TOOL_LOOP_LIMIT;
+    const maxToolLoops = PROXY_TOOL_LOOP_LIMIT > 0 ? PROXY_TOOL_LOOP_LIMIT : Number.POSITIVE_INFINITY;
     if (PROXY_TEST_MODE && testDirectives.forceToolResult) {
       hasToolResult = true;
-      toolResultCount = Math.max(toolResultCount, maxToolLoops);
+      if (Number.isFinite(maxToolLoops)) {
+        toolResultCount = Math.max(toolResultCount, maxToolLoops);
+      }
     }
+    const allowTodoWrite = shouldAllowTodoTools(lastUser);
+    const filteredTools = filterPlannerTools(tools, { allowTodoTools: allowTodoWrite });
+    tools = filteredTools.tools;
+    if (PROXY_DEBUG && filteredTools.droppedTodoTools.length > 0) {
+      console.log(
+        "proxy_debug tool_policy_dropped:",
+        JSON.stringify({
+          droppedTodoTools: filteredTools.droppedTodoTools,
+        }),
+      );
+    }
+
     const toolRegistry = buildToolRegistry(tools);
     const bodyFeatures = body?.features && typeof body.features === "object" ? body.features : {};
     const featureOverrides: Record<string, unknown> = { ...bodyFeatures };
@@ -515,6 +965,12 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
       featureOverrides.auto_web_search = true;
     }
     const loweredUser = lastUser.toLowerCase();
+    const rawDispatchContext: RawDispatchContext = {
+      lastUser,
+      hasToolResult,
+      allowTodoWrite,
+      recentFilePath: inferRecentFilePath(sanitizedMessages),
+    };
     const hasEmbeddedRead = EMBEDDED_READ_REGEX.test(lastUser);
     const disableHeuristics = PROXY_TEST_MODE && testDirectives.disableHeuristics;
     const fileMention = FILE_MENTION_REGEX.test(lastUser);
@@ -565,7 +1021,18 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
       .map((msg: any) => extractContentText(msg.content))
       .filter(Boolean)
       .join("\n\n");
-    const baseMessages = buildMessages(sanitizedMessages, shouldAttemptTools ? tools : [], systemText);
+    const runtimeWorkspaceSystem = [
+      "Runtime workspace context:",
+      `- cwd: ${process.cwd()}`,
+      "Path policy: use repo-relative paths for tool args whenever possible.",
+      "Never emit read/write/edit/apply_patch actions without an explicit file path.",
+    ].join("\n");
+    const plannerSystemText = [systemText, runtimeWorkspaceSystem].filter(Boolean).join("\n\n");
+    const baseMessages = buildMessages(
+      sanitizedMessages,
+      shouldAttemptTools ? tools : [],
+      shouldAttemptTools ? plannerSystemText : systemText,
+    );
     let glmMessages = baseMessages.messages;
     let glmStats = baseMessages.stats;
     if (PROXY_DEBUG) {
@@ -587,7 +1054,10 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
     }
     const useHistoryThisRequest = useGlmHistory && !compactionReset;
     if (useHistoryThisRequest) {
-      const signature = buildSignature(shouldAttemptTools ? tools : [], systemText);
+      const signature = buildSignature(
+        shouldAttemptTools ? tools : [],
+        shouldAttemptTools ? plannerSystemText : systemText,
+      );
       const signatureChanged = signature !== lastSignature;
       const deltaResult = computeDeltaMessages(sanitizedMessages);
       if (deltaResult.reset || signatureChanged) {
@@ -617,7 +1087,15 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
           ? [{ role: "system", content: systemText }, ...deltaMessages]
           : deltaMessages;
       const toolSeed = alwaysSendSystem ? tools : reseed ? tools : [];
-      const extraSystem = alwaysSendSystem ? systemText : reseed ? systemText : "";
+      const extraSystem = alwaysSendSystem
+        ? shouldAttemptTools
+          ? plannerSystemText
+          : systemText
+        : reseed
+          ? shouldAttemptTools
+            ? plannerSystemText
+            : systemText
+          : "";
       const deltaConverted = convertMessages(injectedDeltaMessages, toolSeed, {
         toolMaxLines: contextConfig.toolMaxLines,
         toolMaxChars: contextConfig.toolMaxChars,
@@ -636,7 +1114,10 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
         PROXY_HISTORY_MAX_MESSAGES > 0
           ? sanitizedMessages.slice(-PROXY_HISTORY_MAX_MESSAGES)
           : sanitizedMessages;
-      lastSignature = buildSignature(shouldAttemptTools ? tools : [], systemText);
+      lastSignature = buildSignature(
+        shouldAttemptTools ? tools : [],
+        shouldAttemptTools ? plannerSystemText : systemText,
+      );
     }
     const POST_TOOL_SYSTEM = [
       "You have received tool results.",
@@ -652,7 +1133,7 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
         const instructedMessages = convertMessages(sanitizedMessages, toolSeed, {
           toolMaxLines: contextConfig.toolMaxLines,
           toolMaxChars: contextConfig.toolMaxChars,
-          extraSystem: systemText,
+          extraSystem: plannerSystemText,
         });
         const withInstruction = compactMessages(
           [
@@ -671,7 +1152,7 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
           POST_TOOL_SYSTEM,
           sanitizedMessages,
           tools,
-          systemText,
+          plannerSystemText,
         );
         glmMessages = instructed.messages;
         glmStats = instructed.stats;
@@ -679,6 +1160,21 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
     }
     let responsePromptTokens = estimateMessagesTokens(glmMessages);
     const streamHeaders = buildStreamHeaders(glmStats);
+    let lastModelThinking = "";
+    const collectModelResponse = async (
+      chatId: string,
+      requestMessages: { role: string; content: string }[],
+      options?: { parentMessageId?: string | null },
+    ) => {
+      const detailed = await collectGlmResponseDetailed(client, chatId, requestMessages, {
+        enableThinking: enableThinkingFinal,
+        features: featureOverrides,
+        includeHistory: useHistoryThisRequest,
+        parentMessageId: options?.parentMessageId,
+      });
+      lastModelThinking = detailed.thinking;
+      return detailed.content;
+    };
 
     if (shouldAttemptTools) {
       // If the user provides explicit planner JSON that references unknown tools, fail fast
@@ -726,11 +1222,7 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
           plannerParentMessageId = null;
         }
       }
-      let responseText = await collectGlmResponse(client, activeChatId, glmMessages, {
-        enableThinking: enableThinkingFinal,
-        features: featureOverrides,
-        includeThinking: false,
-        includeHistory: useHistoryThisRequest,
+      let responseText = await collectModelResponse(activeChatId, glmMessages, {
         parentMessageId: plannerParentMessageId,
       });
       const initialResponseText = responseText;
@@ -740,22 +1232,40 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
       }
       const earlyRawToolCalls = parseRawToolCalls(responseText, toolRegistry);
       if (earlyRawToolCalls && isRawToolCallsAllowed(earlyRawToolCalls)) {
+        const prepared = prepareRawToolCalls(earlyRawToolCalls, rawDispatchContext, toolRegistry);
+        if (!prepared) {
+          if (PROXY_DEBUG) {
+            console.log("proxy_debug raw_tool_calls_suppressed: true");
+          }
+        } else {
         return guardAndSendToolCalls(
           reply,
-          earlyRawToolCalls,
+          prepared.toolCalls,
           model,
           stream,
           streamHeaders,
-          buildToolUsage(responsePromptTokens, earlyRawToolCalls),
+          buildToolUsage(responsePromptTokens, prepared.toolCalls),
           responsePromptTokens,
           glmStats,
           "raw",
           toolRegistry,
+          {
+            ...rawDispatchContext,
+            rawSignature: prepared.signature,
+          },
+          lastModelThinking,
         );
+        }
       } else if (earlyRawToolCalls && PROXY_DEBUG) {
         console.log("proxy_debug raw_tool_calls_blocked: true");
       }
       let parsed = tryParseModelOutput(responseText, false);
+      if (!parsed.ok) {
+        const repaired = tryRepairPlannerOutput(responseText);
+        if (repaired) {
+          parsed = { ok: true, data: repaired };
+        }
+      }
       if (PROXY_DEBUG && !parsed.ok) {
         console.log("proxy_debug json_parse_error:", parsed.error);
       }
@@ -766,11 +1276,7 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
           content: "Return ONLY valid JSON following the schema. No extra text or analysis.",
         };
         const correctedMessages = [...glmMessages, corrective];
-        responseText = await collectGlmResponse(client, activeChatId, correctedMessages, {
-          enableThinking: enableThinkingFinal,
-          features: featureOverrides,
-          includeThinking: false,
-          includeHistory: useHistoryThisRequest,
+        responseText = await collectModelResponse(activeChatId, correctedMessages, {
           parentMessageId: plannerParentMessageId,
         });
         responsePromptTokens = estimateMessagesTokens(correctedMessages);
@@ -779,6 +1285,12 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
           console.log("proxy_debug model_retry_raw:", preview);
         }
         parsed = tryParseModelOutput(responseText, false);
+        if (!parsed.ok) {
+          const repaired = tryRepairPlannerOutput(responseText);
+          if (repaired) {
+            parsed = { ok: true, data: repaired };
+          }
+        }
         if (PROXY_DEBUG && !parsed.ok) {
           console.log("proxy_debug json_parse_error:", parsed.error);
         }
@@ -790,11 +1302,7 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
           content: "Return ONLY valid JSON object. No markdown, no analysis, no extra keys.",
         };
         const stricterMessages = [...glmMessages, stricter];
-        responseText = await collectGlmResponse(client, activeChatId, stricterMessages, {
-          enableThinking: enableThinkingFinal,
-          features: featureOverrides,
-          includeThinking: false,
-          includeHistory: useHistoryThisRequest,
+        responseText = await collectModelResponse(activeChatId, stricterMessages, {
           parentMessageId: plannerParentMessageId,
         });
         responsePromptTokens = estimateMessagesTokens(stricterMessages);
@@ -803,6 +1311,12 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
           console.log("proxy_debug model_retry2_raw:", preview);
         }
         parsed = tryParseModelOutput(responseText, false);
+        if (!parsed.ok) {
+          const repaired = tryRepairPlannerOutput(responseText);
+          if (repaired) {
+            parsed = { ok: true, data: repaired };
+          }
+        }
         if (PROXY_DEBUG && !parsed.ok) {
           console.log("proxy_debug json_parse_error:", parsed.error);
         }
@@ -828,18 +1342,29 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
           : null;
       if (maybeRawToolCalls) {
         if (isRawToolCallsAllowed(maybeRawToolCalls)) {
-          return guardAndSendToolCalls(
-            reply,
-            maybeRawToolCalls,
-            model,
-            stream,
-            streamHeaders,
-            buildToolUsage(responsePromptTokens, maybeRawToolCalls),
-            responsePromptTokens,
-            glmStats,
-            "raw",
-            toolRegistry,
-          );
+          const prepared = prepareRawToolCalls(maybeRawToolCalls, rawDispatchContext, toolRegistry);
+          if (prepared) {
+            return guardAndSendToolCalls(
+              reply,
+              prepared.toolCalls,
+              model,
+              stream,
+              streamHeaders,
+              buildToolUsage(responsePromptTokens, prepared.toolCalls),
+              responsePromptTokens,
+              glmStats,
+              "raw",
+              toolRegistry,
+              {
+                ...rawDispatchContext,
+                rawSignature: prepared.signature,
+              },
+              lastModelThinking,
+            );
+          }
+          if (PROXY_DEBUG) {
+            console.log("proxy_debug raw_tool_calls_suppressed: true");
+          }
         }
         if (PROXY_DEBUG) {
           console.log("proxy_debug raw_tool_calls_blocked: true");
@@ -863,18 +1388,29 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
         const rawToolCalls = parseRawToolCalls(responseText, toolRegistry);
         if (rawToolCalls) {
           if (isRawToolCallsAllowed(rawToolCalls)) {
-            return guardAndSendToolCalls(
-              reply,
-              rawToolCalls,
-              model,
-              stream,
-              streamHeaders,
-              buildToolUsage(responsePromptTokens, rawToolCalls),
-              responsePromptTokens,
-              glmStats,
-              "raw",
-              toolRegistry,
-            );
+            const prepared = prepareRawToolCalls(rawToolCalls, rawDispatchContext, toolRegistry);
+            if (prepared) {
+              return guardAndSendToolCalls(
+                reply,
+                prepared.toolCalls,
+                model,
+                stream,
+                streamHeaders,
+                buildToolUsage(responsePromptTokens, prepared.toolCalls),
+                responsePromptTokens,
+                glmStats,
+                "raw",
+                toolRegistry,
+                {
+                  ...rawDispatchContext,
+                  rawSignature: prepared.signature,
+                },
+                lastModelThinking,
+              );
+            }
+            if (PROXY_DEBUG) {
+              console.log("proxy_debug raw_tool_calls_suppressed: true");
+            }
           }
           if (PROXY_DEBUG) {
             console.log("proxy_debug raw_tool_calls_blocked: true");
@@ -884,17 +1420,19 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
         const looksLikePlannerJson = PLANNER_JSON_HINT_REGEX.test(responseText) || responseText.trim().startsWith("{");
         if (looksLikePlannerJson) {
             const finalPayload = buildInstructionMessages(POST_TOOL_SYSTEM, messages, tools);
-            const finalText = await collectGlmResponse(client, activeChatId, finalPayload.messages, {
-              enableThinking: enableThinkingFinal,
-              features: featureOverrides,
-              includeThinking: false,
-              includeHistory: useHistoryThisRequest,
-            });
+            const finalText = await collectModelResponse(activeChatId, finalPayload.messages);
             const finalPromptTokens = estimateMessagesTokens(finalPayload.messages);
             const extractedFinal = extractPlannerFinal(finalText) ?? extractPlannerFinal(responseText);
             const finalContent = extractedFinal ?? finalText;
             if (stream) {
-              return sendStreamContent(reply, finalContent, model, finalPayload.stats, finalPromptTokens);
+              return sendStreamContent(
+                reply,
+                finalContent,
+                model,
+                finalPayload.stats,
+                finalPromptTokens,
+                lastModelThinking,
+              );
             }
             return sendContent(reply, finalContent, model, finalPromptTokens, finalPayload.stats);
           }
@@ -903,7 +1441,14 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
         const extractedFinal = extractPlannerFinal(responseText);
         const finalContent = extractedFinal ?? responseText;
         if (stream) {
-          return sendStreamContent(reply, finalContent, model, glmStats, responsePromptTokens);
+          return sendStreamContent(
+            reply,
+            finalContent,
+            model,
+            glmStats,
+            responsePromptTokens,
+            lastModelThinking,
+          );
         }
         return sendContent(reply, finalContent, model, responsePromptTokens, glmStats);
       }
@@ -932,16 +1477,18 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
             messages,
             [],
           );
-          const finalText = await collectGlmResponse(client, activeChatId, finalPayload.messages, {
-            enableThinking: enableThinkingFinal,
-            features: featureOverrides,
-            includeThinking: false,
-            includeHistory: useHistoryThisRequest,
-          });
+          const finalText = await collectModelResponse(activeChatId, finalPayload.messages);
           const finalPromptTokens = estimateMessagesTokens(finalPayload.messages);
           const finalContent = extractPlannerFinal(finalText) ?? finalText;
           if (stream) {
-            return sendStreamContent(reply, finalContent, model, finalPayload.stats, finalPromptTokens);
+            return sendStreamContent(
+              reply,
+              finalContent,
+              model,
+              finalPayload.stats,
+              finalPromptTokens,
+              lastModelThinking,
+            );
           }
           return sendContent(reply, finalContent, model, finalPromptTokens, finalPayload.stats);
         }
@@ -984,6 +1531,38 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
           );
         }
       }
+      if (Array.isArray(parsedData.actions) && parsedData.actions.length > 0) {
+        const beforePolicy = parsedData.actions.length;
+        const policyFiltered = filterPlannerActions(parsedData.actions as any[], {
+          allowTodoTools: allowTodoWrite,
+        });
+        const candidateActions = policyFiltered.actions;
+        const filteredTodoCount = policyFiltered.droppedTodoActions;
+        let filteredNoOpCount = 0;
+        const filtered = candidateActions.filter((action: any) => {
+          const toolInfo = findTool(toolRegistry, action?.tool || "");
+          const toolName = toolInfo?.tool.function?.name || toolInfo?.tool.name || action?.tool || "";
+          const args =
+            action?.args && typeof action.args === "object"
+              ? (action.args as Record<string, unknown>)
+              : {};
+          const keep = !isNoOpEditArgs(toolName, args);
+          if (!keep) filteredNoOpCount += 1;
+          return keep;
+        });
+        if ((filteredTodoCount > 0 || filteredNoOpCount > 0) && PROXY_DEBUG) {
+          console.log(
+            "proxy_debug planner_actions_filtered:",
+            JSON.stringify({
+              originalCount: beforePolicy,
+              filteredCount: filtered.length,
+              droppedTodoActions: filteredTodoCount,
+              droppedNoOpEdits: filteredNoOpCount,
+            }),
+          );
+        }
+        parsedData = { ...parsedData, actions: filtered };
+      }
 
       const structural = validatePlannerActions(parsedData.actions as any);
       if (!structural.ok) {
@@ -1003,21 +1582,160 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
           messages,
           [],
         );
-        const finalText = await collectGlmResponse(client, activeChatId, finalPayload.messages, {
-          enableThinking: enableThinkingFinal,
-          features: featureOverrides,
-          includeThinking: false,
-          includeHistory: useHistoryThisRequest,
-        });
+        const finalText = await collectModelResponse(activeChatId, finalPayload.messages);
         const finalPromptTokens = estimateMessagesTokens(finalPayload.messages);
         const finalContent = extractPlannerFinal(finalText) ?? finalText;
         if (stream) {
-          return sendStreamContent(reply, finalContent, model, finalPayload.stats, finalPromptTokens);
+          return sendStreamContent(
+            reply,
+            finalContent,
+            model,
+            finalPayload.stats,
+            finalPromptTokens,
+            lastModelThinking,
+          );
         }
         return sendContent(reply, finalContent, model, finalPromptTokens, finalPayload.stats);
       }
 
       if (parsedData.actions.length === 0) {
+        if (hasToolResult && !String(parsedData.final || "").trim()) {
+          const dispatchRecoveryActions = (
+            actions: any[],
+            promptTokens: number,
+            stats: ContextStats,
+          ) => {
+            const policyFiltered = filterPlannerActions(actions, {
+              allowTodoTools: allowTodoWrite,
+            });
+            const filteredActions = policyFiltered.actions;
+            if (filteredActions.length === 0) return null;
+            const structuralRecovery = validatePlannerActions(filteredActions as any);
+            if (!structuralRecovery.ok) return null;
+            const invalidRecovery = filteredActions.find((action: any) => !findTool(toolRegistry, action?.tool || ""));
+            if (invalidRecovery) return null;
+            const boundedRecoveryActions = applyMutationActionBoundary(filteredActions as any, toolRegistry);
+            const recoveryToolCalls = boundedRecoveryActions.actions.map((action, idx) => {
+              const toolInfo = findTool(toolRegistry, action.tool);
+              const toolName = toolInfo?.tool.function?.name || toolInfo?.tool.name || action.tool;
+              let args = normalizeArgsForTool(toolInfo, action.args || {});
+              const normalizedTool = String(toolName || "").toLowerCase().replace(/[_-]/g, "");
+              const needsPath = normalizedTool === "read" || normalizedTool === "readfile";
+              const hasPath =
+                args.path != null ||
+                (args as any).filePath != null ||
+                (args as any).file_path != null;
+              if (needsPath && !hasPath) {
+                const inferred = inferRecentFilePath(sanitizedMessages);
+                if (inferred) {
+                  const key =
+                    toolInfo?.argKeys?.includes("filePath") ? "filePath" : "path";
+                  args = { ...args, [key]: inferred };
+                }
+              }
+              return {
+                id: `call_${crypto.randomUUID().slice(0, 8)}`,
+                index: idx,
+                type: "function",
+                function: {
+                  name: toolName,
+                  arguments: JSON.stringify(args),
+                },
+              };
+            });
+            return guardAndSendToolCalls(
+              reply,
+              recoveryToolCalls,
+              model,
+              stream,
+              streamHeaders,
+              buildToolUsage(promptTokens, recoveryToolCalls),
+              promptTokens,
+              stats,
+              "planner",
+              toolRegistry,
+              undefined,
+              lastModelThinking,
+            );
+          };
+
+          const parseRecoveryPayload = (text: string) => {
+            let parsedRecovery = tryParseModelOutput(text, false);
+            if (!parsedRecovery.ok || !parsedRecovery.data) {
+              const repairedRecovery = tryRepairPlannerOutput(text);
+              if (repairedRecovery) {
+                parsedRecovery = { ok: true, data: repairedRecovery };
+              }
+            }
+            return parsedRecovery;
+          };
+
+          if (PROXY_DEBUG) {
+            console.log("proxy_debug empty_action_recovery: attempt");
+          }
+          const recoveryPayload = buildInstructionMessages(
+            "You received tool results but returned no actionable response. Continue the task. Return ONLY a JSON object matching the schema. If more tools are needed, include actions. Do not return todowrite-only status updates unless the user explicitly asked for a todo/checklist.",
+            messages,
+            tools,
+          );
+          const recoveryText = await collectModelResponse(activeChatId, recoveryPayload.messages);
+          const recoveryPromptTokens = estimateMessagesTokens(recoveryPayload.messages);
+
+          const recoveryRawToolCalls = parseRawToolCalls(recoveryText, toolRegistry);
+          if (recoveryRawToolCalls && isRawToolCallsAllowed(recoveryRawToolCalls)) {
+            const prepared = prepareRawToolCalls(recoveryRawToolCalls, rawDispatchContext, toolRegistry);
+            if (prepared) {
+              return guardAndSendToolCalls(
+                reply,
+                prepared.toolCalls,
+                model,
+                stream,
+                streamHeaders,
+                buildToolUsage(recoveryPromptTokens, prepared.toolCalls),
+                recoveryPromptTokens,
+                recoveryPayload.stats,
+                "raw",
+                toolRegistry,
+                {
+                  ...rawDispatchContext,
+                  rawSignature: prepared.signature,
+                },
+                lastModelThinking,
+              );
+            }
+            if (PROXY_DEBUG) {
+              console.log("proxy_debug raw_tool_calls_suppressed: true");
+            }
+          }
+
+          let recovered = parseRecoveryPayload(recoveryText);
+          if (recovered.ok && recovered.data && recovered.data.actions.length > 0) {
+            const dispatched = dispatchRecoveryActions(
+              recovered.data.actions as any,
+              recoveryPromptTokens,
+              recoveryPayload.stats,
+            );
+            if (dispatched) {
+              return dispatched;
+            }
+          }
+
+          const recoveredFinal =
+            extractPlannerFinal(recoveryText) ||
+            (recovered.ok && recovered.data ? recovered.data.final : "") ||
+            "No further actions were produced; task may require another explicit user prompt.";
+          if (stream) {
+            return sendStreamContent(
+              reply,
+              recoveredFinal,
+              model,
+              recoveryPayload.stats,
+              recoveryPromptTokens,
+              lastModelThinking,
+            );
+          }
+          return sendContent(reply, recoveredFinal, model, recoveryPromptTokens, recoveryPayload.stats);
+        }
         if (!hasToolResult) {
           const fallbackTools = allowHeuristicTools
             ? inferReadToolCall(toolRegistry, lastUser) ||
@@ -1041,7 +1759,14 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
         }
         const content = parsedData.final || "";
         if (stream) {
-          return sendStreamContent(reply, content, model, glmStats, responsePromptTokens);
+          return sendStreamContent(
+            reply,
+            content,
+            model,
+            glmStats,
+            responsePromptTokens,
+            lastModelThinking,
+          );
         }
         return sendContent(reply, content, model, responsePromptTokens, glmStats);
       }
@@ -1110,39 +1835,54 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
         glmStats,
         "planner",
         toolRegistry,
+        undefined,
+        lastModelThinking,
       );
     }
 
     if (stream) {
       const activeChatId = await getChatId();
       if (tools.length > 0 && !shouldAttemptTools) {
-        const fullText = await collectGlmResponse(client, activeChatId, glmMessages, {
-          enableThinking: enableThinkingFinal,
-          features: featureOverrides,
-          includeThinking: false,
-          includeHistory: useHistoryThisRequest,
-        });
+        const fullText = await collectModelResponse(activeChatId, glmMessages);
         const rawToolCalls = parseRawToolCalls(fullText, toolRegistry);
         if (rawToolCalls) {
           if (isRawToolCallsAllowed(rawToolCalls)) {
-            return guardAndSendToolCalls(
-              reply,
-              rawToolCalls,
-              model,
-              true,
-              streamHeaders,
-              buildToolUsage(responsePromptTokens, rawToolCalls),
-              responsePromptTokens,
-              glmStats,
-              "raw",
-              toolRegistry,
-            );
+            const prepared = prepareRawToolCalls(rawToolCalls, rawDispatchContext, toolRegistry);
+            if (prepared) {
+              return guardAndSendToolCalls(
+                reply,
+                prepared.toolCalls,
+                model,
+                true,
+                streamHeaders,
+                buildToolUsage(responsePromptTokens, prepared.toolCalls),
+                responsePromptTokens,
+                glmStats,
+                "raw",
+                toolRegistry,
+                {
+                  ...rawDispatchContext,
+                  rawSignature: prepared.signature,
+                },
+                lastModelThinking,
+              );
+            }
+            if (PROXY_DEBUG) {
+              console.log("proxy_debug raw_tool_calls_suppressed: true");
+            }
           }
           if (PROXY_DEBUG) {
             console.log("proxy_debug raw_tool_calls_blocked: true");
           }
         }
-        return sendStreamContent(reply, fullText, model, glmStats, responsePromptTokens);
+        return sendStreamContent(
+          reply,
+          fullText,
+          model,
+          glmStats,
+          responsePromptTokens,
+          lastModelThinking,
+        );
       }
       reply.raw.writeHead(200, { "Content-Type": "text/event-stream", ...streamHeaders });
       let parentId: string | null = null;
@@ -1214,17 +1954,30 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
     }
 
     const activeChatId = await getChatId();
-    const content = await collectGlmResponse(client, activeChatId, glmMessages, {
-      enableThinking: enableThinkingFinal,
-      features: featureOverrides,
-      includeThinking: false,
-      includeHistory: useHistoryThisRequest,
-    });
+    const content = await collectModelResponse(activeChatId, glmMessages);
     if (tools.length > 0) {
       const rawToolCalls = parseRawToolCalls(content, toolRegistry);
-      if (rawToolCalls) {
-        applyResponseHeaders(reply, glmStats);
-        return reply.send(openaiToolResponse(rawToolCalls, model));
+      if (rawToolCalls && isRawToolCallsAllowed(rawToolCalls)) {
+        const prepared = prepareRawToolCalls(rawToolCalls, rawDispatchContext, toolRegistry);
+        if (prepared) {
+          return guardAndSendToolCalls(
+            reply,
+            prepared.toolCalls,
+            model,
+            false,
+            {},
+            buildToolUsage(responsePromptTokens, prepared.toolCalls),
+            responsePromptTokens,
+            glmStats,
+            "raw",
+            toolRegistry,
+            {
+              ...rawDispatchContext,
+              rawSignature: prepared.signature,
+            },
+            lastModelThinking,
+          );
+        }
       }
     }
     return sendContent(reply, content, model, responsePromptTokens, glmStats);

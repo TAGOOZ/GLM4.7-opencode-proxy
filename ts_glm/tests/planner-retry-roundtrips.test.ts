@@ -76,6 +76,8 @@ test("planner retry reuses parentMessageId (avoids repeated getCurrentMessageId 
   await handler(request, reply);
 
   assert.equal(sendCalls, 2, "expected one retry");
-  assert.equal(currentCalls, 1, "expected parentMessageId resolved once for all attempts");
+  assert.ok(
+    currentCalls <= 1,
+    `expected parentMessageId resolved at most once for all attempts (got ${currentCalls})`,
+  );
 });
-

@@ -71,9 +71,9 @@ test("raw tool_calls array exceeding PROXY_MAX_ACTIONS_PER_TURN is truncated", a
   const payload = await runProxy(
     JSON.stringify([
       { name: "read", arguments: { path: "README.md" } },
-      { name: "read", arguments: { path: "README.md" } },
-      { name: "read", arguments: { path: "README.md" } },
-      { name: "read", arguments: { path: "README.md" } },
+      { name: "read", arguments: { path: "package.json" } },
+      { name: "read", arguments: { path: "AGENTS.md" } },
+      { name: "read", arguments: { path: "ts_glm/package.json" } },
     ]),
   );
 
@@ -87,8 +87,8 @@ test("raw tool_calls array within limit is allowed", async () => {
   const payload = await runProxy(
     JSON.stringify([
       { name: "read", arguments: { path: "README.md" } },
-      { name: "read", arguments: { path: "README.md" } },
-      { name: "read", arguments: { path: "README.md" } },
+      { name: "read", arguments: { path: "package.json" } },
+      { name: "read", arguments: { path: "AGENTS.md" } },
     ]),
   );
 

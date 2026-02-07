@@ -1,3 +1,5 @@
+import path from "path";
+
 const SAFE_ENV_SUFFIXES = new Set(["example", "sample", "template", "dist"]);
 
 const isAbsolutePathLike = (input: string): boolean => {
@@ -10,12 +12,49 @@ const isAbsolutePathLike = (input: string): boolean => {
   return false;
 };
 
-const isUnsafePathInput = (input: string): boolean => {
+const getWorkspaceRoots = (): string[] => {
+  const configured = String(process.env.PROXY_WORKSPACE_ROOT || "")
+    .split(/[,\n]/)
+    .flatMap((chunk) => chunk.split(path.delimiter))
+    .map((v) => v.trim())
+    .filter(Boolean);
+  const fromEnv = [process.env.INIT_CWD, process.cwd()].filter(Boolean) as string[];
+  const roots = [...configured, ...fromEnv].map((root) => path.resolve(root));
+  return [...new Set(roots)];
+};
+
+const normalizePathForWorkspace = (input: string, workspaceRoots: string[] = getWorkspaceRoots()): string => {
+  const trimmed = input.trim();
+  if (!trimmed) return trimmed;
+  if (!isAbsolutePathLike(trimmed)) return trimmed;
+  if (!path.isAbsolute(trimmed)) return trimmed;
+  const resolved = path.resolve(trimmed);
+  for (const root of workspaceRoots) {
+    const rel = path.relative(root, resolved);
+    if (rel === "" || (!rel.startsWith(`..${path.sep}`) && rel !== ".." && !path.isAbsolute(rel))) {
+      return rel || ".";
+    }
+  }
+  return trimmed;
+};
+
+const isUnsafePathInput = (
+  input: string,
+  options?: { allowAbsoluteInWorkspace?: boolean; workspaceRoots?: string[] },
+): boolean => {
   const trimmed = input.trim();
   if (!trimmed) return true;
   if (trimmed.includes("\0")) return true;
   if (trimmed.startsWith("~")) return true;
-  if (isAbsolutePathLike(trimmed)) return true;
+  if (isAbsolutePathLike(trimmed)) {
+    if (options?.allowAbsoluteInWorkspace) {
+      const normalized = normalizePathForWorkspace(trimmed, options.workspaceRoots);
+      if (normalized !== trimmed) {
+        return isUnsafePathInput(normalized, { allowAbsoluteInWorkspace: false });
+      }
+    }
+    return true;
+  }
   if (/(^|[\\/])\.\.(?:[\\/]|$)/.test(trimmed)) return true;
   return false;
 };
@@ -78,4 +117,4 @@ const isSensitivePath = (value: string): boolean => {
   return false;
 };
 
-export { isSensitivePath, isUnsafePathInput };
+export { getWorkspaceRoots, isSensitivePath, isUnsafePathInput, normalizePathForWorkspace };

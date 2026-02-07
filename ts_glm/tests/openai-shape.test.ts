@@ -57,3 +57,24 @@ test("openaiToolResponse strips non-standard index field from non-stream tool_ca
   assert.strictEqual(msgCalls[0].function?.name, "read");
 });
 
+test("streamToolCalls emits reasoning_content chunk when provided", () => {
+  const toolCalls = [
+    {
+      index: 0,
+      id: "call_123",
+      type: "function",
+      function: { name: "read", arguments: "{\"path\":\"README.md\"}" },
+    },
+  ];
+  const sse = streamToolCalls(toolCalls, "glm-4.7", undefined, "thinking trace");
+  const events = parseSseEvents(sse);
+  assert.ok(events.length >= 4);
+  assert.strictEqual(events.at(-1), "[DONE]");
+
+  const first = JSON.parse(events[0] as string);
+  assert.strictEqual(first.choices?.[0]?.delta?.reasoning_content, "thinking trace");
+
+  const second = JSON.parse(events[1] as string);
+  assert.strictEqual(second.choices?.[0]?.delta?.role, "assistant");
+  assert.ok(Array.isArray(second.choices?.[0]?.delta?.tool_calls));
+});

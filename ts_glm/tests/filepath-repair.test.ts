@@ -91,7 +91,7 @@ test("planner read without path is repaired from recent conversation", async () 
   assert.equal(args.path, "calculator/calculator.py");
 });
 
-test("planner write without path is blocked (no heuristic mutations)", async () => {
+test("planner write without path is blocked", async () => {
   const payload = await runProxy(
     JSON.stringify({
       plan: ["write a quick note"],
@@ -103,6 +103,30 @@ test("planner write without path is blocked (no heuristic mutations)", async () 
     ],
   );
 
-  assert.equal(payload?.choices?.[0]?.message?.tool_calls, undefined);
-  assert.equal(payload?.choices?.[0]?.message?.content, "Blocked unsafe tool call (missing_path).");
+  const content = payload?.choices?.[0]?.message?.content || "";
+  assert.equal(typeof content, "string");
+  assert.equal(String(content).includes("Blocked unsafe tool call (missing_path)."), true);
+});
+
+test("raw write without path is repaired from recent file context after tool result", async () => {
+  const payload = await runProxy(
+    JSON.stringify([
+      {
+        name: "write",
+        arguments: { content: "fn main() { println!(\"updated\"); }" },
+      },
+    ]),
+    [
+      { role: "assistant", content: "Read snake_game/src/main.rs and prepare an update." },
+      { role: "user", content: "apply the change" },
+      { role: "tool", tool_call_id: "call_read_1", content: "<file>fn main() { println!(\"Hello\"); }</file>" },
+    ],
+  );
+  const toolCalls = payload?.choices?.[0]?.message?.tool_calls;
+  assert.ok(Array.isArray(toolCalls));
+  assert.equal(toolCalls.length, 1);
+  assert.equal(toolCalls[0]?.function?.name, "write");
+  const args = JSON.parse(toolCalls[0]?.function?.arguments || "{}");
+  assert.equal(args.path, "snake_game/src/main.rs");
+  assert.equal(typeof args.content, "string");
 });

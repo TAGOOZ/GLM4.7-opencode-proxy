@@ -4,6 +4,7 @@ import cors from "@fastify/cors";
 import { GLMClient } from "../glmClient.js";
 import { loadToken } from "../config.js";
 import { DEFAULT_MODEL, PROXY_DEBUG, PROXY_NEW_CHAT_PER_REQUEST } from "./constants.js";
+import { debugLog } from "./debug.js";
 import { createChatCompletionHandler } from "./handler.js";
 
 const app = Fastify();
@@ -23,8 +24,10 @@ const ensureChat = async (): Promise<string> => {
     const chat = await client.createChat("OpenCode Proxy", DEFAULT_MODEL);
     proxyChatId = chat.id;
     if (PROXY_DEBUG) {
-      console.log("proxy_debug new_chat:", proxyChatId);
+      debugLog("new_chat:", proxyChatId);
     }
+  } else if (PROXY_DEBUG) {
+    debugLog("reuse_chat:", proxyChatId);
   }
   return proxyChatId;
 };

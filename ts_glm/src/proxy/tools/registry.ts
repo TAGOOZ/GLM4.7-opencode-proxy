@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import { PROXY_DEBUG } from "../constants.js";
 
 type ToolLike = {
@@ -127,6 +128,28 @@ const normalizeArgsForTool = (toolInfo: ToolInfo | null, args: Record<string, un
   for (const key of allowed) {
     allowedNorm.set(normalizeToolName(key), key);
   }
+  const toolName = toolInfo?.tool?.function?.name || toolInfo?.tool?.name || "";
+  const normalizedToolName = normalizeToolName(toolName);
+  const isShellTool =
+    normalizedToolName === "run" ||
+    normalizedToolName === "runshell" ||
+    normalizedToolName === "bash" ||
+    normalizedToolName === "shell";
+  const shellMetaKeys = new Set([
+    "description",
+    "workdir",
+    "cwd",
+    "directory",
+    "timeout",
+    "yieldtimems",
+    "maxoutputtokens",
+    "sandboxpermissions",
+    "justification",
+    "prefixrule",
+    "login",
+    "tty",
+    "shell",
+  ]);
   const normalized: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(args)) {
     const keyNorm = normalizeToolName(key);
@@ -147,6 +170,11 @@ const normalizeArgsForTool = (toolInfo: ToolInfo | null, args: Record<string, un
         continue;
       }
     }
+    // Some models attach execution metadata to shell calls even when the tool schema
+    // only allows command/cmd. Drop those extras to avoid false "unexpected_arg" blocks.
+    if (isShellTool && shellMetaKeys.has(keyNorm) && !allowedNorm.has(keyNorm)) {
+      continue;
+    }
     normalized[key] = value;
   }
   const descKey = allowedNorm.get("description");
@@ -162,13 +190,6 @@ const normalizeArgsForTool = (toolInfo: ToolInfo | null, args: Record<string, un
         : "run shell command";
     normalized[descKey] = detail;
   }
-  if (!descKey) {
-    const toolName = toolInfo?.tool?.function?.name || toolInfo?.tool?.name || "";
-    const normalizedName = normalizeToolName(toolName);
-    if ((normalizedName === "run" || normalizedName === "runshell" || normalizedName === "bash") && typeof command === "string") {
-      normalized.description = normalized.description ?? `run shell command: ${command.trim()}`;
-    }
-  }
   if (toolInfo) {
     const toolName = toolInfo.tool.function?.name || toolInfo.tool.name || "";
     if (/webfetch/i.test(toolName)) {
@@ -181,7 +202,7 @@ const normalizeArgsForTool = (toolInfo: ToolInfo | null, args: Record<string, un
     if (normalizedName === "todowrite") {
       const rawTodos = (normalized as Record<string, unknown>).todos;
       if (Array.isArray(rawTodos)) {
-        const todos = rawTodos.map((item) => {
+        const todos = rawTodos.map((item, idx) => {
           const base = item && typeof item === "object" ? { ...(item as Record<string, unknown>) } : {};
           const content =
             typeof base.content === "string"
@@ -191,6 +212,23 @@ const normalizeArgsForTool = (toolInfo: ToolInfo | null, args: Record<string, un
                 : typeof base.title === "string"
                   ? base.title
                   : "";
+          // Some UIs render `title` instead of `content`. Mirror values to maximize compatibility.
+          const title =
+            typeof base.title === "string" && base.title.trim()
+              ? base.title
+              : content;
+          const text =
+            typeof base.text === "string" && base.text.trim()
+              ? base.text
+              : content;
+          const id =
+            typeof base.id === "string" && base.id.trim()
+              ? base.id.trim()
+              : `todo_${crypto
+                  .createHash("sha256")
+                  .update(`${content}|${idx}`)
+                  .digest("hex")
+                  .slice(0, 12)}`;
           const status =
             typeof base.status === "string"
               ? base.status
@@ -203,7 +241,7 @@ const normalizeArgsForTool = (toolInfo: ToolInfo | null, args: Record<string, un
               : typeof base.importance === "string"
                 ? base.importance
                 : "medium";
-          return { ...base, content, status, priority };
+          return { ...base, id, title, text, content, status, priority };
         });
         normalized.todos = todos;
       }

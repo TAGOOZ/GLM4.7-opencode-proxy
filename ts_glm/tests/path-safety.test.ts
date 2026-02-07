@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isSensitivePath, isUnsafePathInput } from "../src/proxy/tools/pathSafety.js";
+import {
+  isSensitivePath,
+  isUnsafePathInput,
+  normalizePathForWorkspace,
+} from "../src/proxy/tools/pathSafety.js";
 
 test("isUnsafePathInput blocks absolute paths", () => {
   assert.equal(isUnsafePathInput("/etc/passwd"), true);
@@ -8,6 +12,25 @@ test("isUnsafePathInput blocks absolute paths", () => {
   assert.equal(isUnsafePathInput("C:/Windows/System32/drivers/etc/hosts"), true);
   assert.equal(isUnsafePathInput("\\\\server\\\\share\\\\file.txt"), true);
   assert.equal(isUnsafePathInput("\\\\Windows\\\\System32"), true);
+});
+
+test("normalizePathForWorkspace converts in-workspace absolute path to relative", () => {
+  const root = process.cwd();
+  const absolute = `${root}/snake_game/Cargo.toml`;
+  assert.equal(normalizePathForWorkspace(absolute, [root]), "snake_game/Cargo.toml");
+});
+
+test("isUnsafePathInput allows in-workspace absolute paths when enabled", () => {
+  const root = process.cwd();
+  const absolute = `${root}/snake_game/Cargo.toml`;
+  assert.equal(
+    isUnsafePathInput(absolute, { allowAbsoluteInWorkspace: true, workspaceRoots: [root] }),
+    false,
+  );
+  assert.equal(
+    isUnsafePathInput("/etc/passwd", { allowAbsoluteInWorkspace: true, workspaceRoots: [root] }),
+    true,
+  );
 });
 
 test("isSensitivePath avoids substring false positives like monkey/hockey", () => {

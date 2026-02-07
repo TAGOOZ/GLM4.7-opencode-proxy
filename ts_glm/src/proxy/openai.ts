@@ -1,5 +1,7 @@
 import crypto from "crypto";
 import type { FastifyReply } from "fastify";
+import { PROXY_DEBUG } from "./constants.js";
+import { debugDump, truncate } from "./debug.js";
 
 // Some OpenAI-compatible clients are strict about the non-stream tool_calls shape.
 // In non-stream responses, tool_calls entries should not include "index".
@@ -44,7 +46,12 @@ const openaiContentResponse = (content: string, model: string, usage?: Record<st
   ...(usage ? { usage } : {}),
 });
 
-const streamContent = (content: string, model: string, usage?: Record<string, number>) => {
+const streamContent = (
+  content: string,
+  model: string,
+  usage?: Record<string, number>,
+  reasoningContent?: string,
+) => {
   const id = `chatcmpl-${crypto.randomUUID().slice(0, 8)}`;
   const created = Math.floor(Date.now() / 1000);
   const finalChunk: Record<string, unknown> = {
@@ -57,7 +64,20 @@ const streamContent = (content: string, model: string, usage?: Record<string, nu
   if (usage) {
     finalChunk.usage = usage;
   }
-  return [
+  const chunks: string[] = [];
+  const trimmedReasoning = String(reasoningContent || "").trim();
+  if (trimmedReasoning) {
+    chunks.push(
+      `data: ${JSON.stringify({
+        id,
+        object: "chat.completion.chunk",
+        created,
+        model,
+        choices: [{ index: 0, delta: { reasoning_content: trimmedReasoning }, finish_reason: null }],
+      })}\n\n`,
+    );
+  }
+  chunks.push(
     `data: ${JSON.stringify({
       id,
       object: "chat.completion.chunk",
@@ -65,14 +85,33 @@ const streamContent = (content: string, model: string, usage?: Record<string, nu
       model,
       choices: [{ index: 0, delta: { role: "assistant", content }, finish_reason: null }],
     })}\n\n`,
-    `data: ${JSON.stringify(finalChunk)}\n\n`,
-    "data: [DONE]\n\n",
-  ].join("");
+  );
+  chunks.push(`data: ${JSON.stringify(finalChunk)}\n\n`);
+  chunks.push("data: [DONE]\n\n");
+  return chunks.join("");
 };
 
-const streamToolCalls = (toolCalls: any[], model: string, usage?: Record<string, number>) => {
+const streamToolCalls = (
+  toolCalls: any[],
+  model: string,
+  usage?: Record<string, number>,
+  reasoningContent?: string,
+) => {
   const id = `chatcmpl-${crypto.randomUUID().slice(0, 8)}`;
   const created = Math.floor(Date.now() / 1000);
+  const chunks: string[] = [];
+  const trimmedReasoning = String(reasoningContent || "").trim();
+  if (trimmedReasoning) {
+    chunks.push(
+      `data: ${JSON.stringify({
+        id,
+        object: "chat.completion.chunk",
+        created,
+        model,
+        choices: [{ index: 0, delta: { reasoning_content: trimmedReasoning }, finish_reason: null }],
+      })}\n\n`,
+    );
+  }
   const firstChunk: Record<string, unknown> = {
     id,
     object: "chat.completion.chunk",
@@ -89,11 +128,10 @@ const streamToolCalls = (toolCalls: any[], model: string, usage?: Record<string,
   };
   // Usage on streamed tool_calls isn't consistently supported; keep it in the final chunk only.
   if (usage) finalChunk.usage = usage;
-  return [
-    `data: ${JSON.stringify(firstChunk)}\n\n`,
-    `data: ${JSON.stringify(finalChunk)}\n\n`,
-    "data: [DONE]\n\n",
-  ].join("");
+  chunks.push(`data: ${JSON.stringify(firstChunk)}\n\n`);
+  chunks.push(`data: ${JSON.stringify(finalChunk)}\n\n`);
+  chunks.push("data: [DONE]\n\n");
+  return chunks.join("");
 };
 
 const sendToolCalls = (
@@ -103,10 +141,28 @@ const sendToolCalls = (
   stream: boolean,
   headers?: Record<string, string>,
   usage?: Record<string, number>,
+  reasoningContent?: string,
 ) => {
+  if (PROXY_DEBUG) {
+    const summary = (Array.isArray(toolCalls) ? toolCalls : []).map((c: any) => ({
+      id: c?.id,
+      type: c?.type,
+      name: c?.function?.name,
+      argsPreview:
+        typeof c?.function?.arguments === "string"
+          ? truncate(c.function.arguments, 400)
+          : undefined,
+    }));
+    debugDump("sendToolCalls", {
+      model,
+      stream,
+      count: Array.isArray(toolCalls) ? toolCalls.length : 0,
+      toolCalls: summary,
+    });
+  }
   if (stream) {
     reply.raw.writeHead(200, { "Content-Type": "text/event-stream", ...(headers || {}) });
-    reply.raw.write(streamToolCalls(toolCalls, model, usage));
+    reply.raw.write(streamToolCalls(toolCalls, model, usage, reasoningContent));
     return reply.raw.end();
   }
   return reply.send(openaiToolResponse(toolCalls, model, usage));

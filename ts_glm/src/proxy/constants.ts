@@ -1,8 +1,8 @@
 export const DEFAULT_MODEL = "glm-4.7";
 
 export const PROXY_DEBUG = process.env.PROXY_DEBUG === "1";
-// Use a fresh GLM chat per request (default: enabled).
-export const PROXY_NEW_CHAT_PER_REQUEST = process.env.PROXY_NEW_CHAT_PER_REQUEST !== "0";
+// Use a fresh GLM chat per request (default: disabled). Enable with PROXY_NEW_CHAT_PER_REQUEST=1.
+export const PROXY_NEW_CHAT_PER_REQUEST = process.env.PROXY_NEW_CHAT_PER_REQUEST === "1";
 // Network tools (webfetch/web_search) are allowed by default. Set to 0 to block.
 export const PROXY_ALLOW_WEB_SEARCH = process.env.PROXY_ALLOW_WEB_SEARCH !== "0";
 // Networked shell commands are allowed by default. Set to 0 to block commands like curl/wget/git clone/npm install.
@@ -14,12 +14,14 @@ export const PROXY_ALLOW_RAW_MUTATIONS = process.env.PROXY_ALLOW_RAW_MUTATIONS !
 export const PROXY_ALLOW_ANY_COMMAND = process.env.PROXY_ALLOW_ANY_COMMAND !== "0";
 // If true, dangerous commands require confirmation (askquestion tool if available) (default: enabled).
 export const PROXY_CONFIRM_DANGEROUS_COMMANDS = process.env.PROXY_CONFIRM_DANGEROUS_COMMANDS !== "0";
-export const PROXY_TOOL_LOOP_LIMIT = Number(process.env.PROXY_TOOL_LOOP_LIMIT || "3");
+// <= 0 means unlimited tool loops.
+export const PROXY_TOOL_LOOP_LIMIT = Number(process.env.PROXY_TOOL_LOOP_LIMIT || "0");
 export const PROXY_INCLUDE_USAGE = process.env.PROXY_INCLUDE_USAGE !== "0";
-export const PROXY_PLANNER_MAX_RETRIES = Number(process.env.PROXY_PLANNER_MAX_RETRIES || "1");
+export const PROXY_PLANNER_MAX_RETRIES = Number(process.env.PROXY_PLANNER_MAX_RETRIES || "2");
 export const PROXY_MAX_ACTIONS_PER_TURN = Number(process.env.PROXY_MAX_ACTIONS_PER_TURN || "3");
 export const PROXY_PLANNER_COERCE = process.env.PROXY_PLANNER_COERCE !== "0";
-export const PROXY_USE_GLM_HISTORY = process.env.PROXY_USE_GLM_HISTORY === "1";
+// Reuse GLM-side chat history across requests (default: enabled). Disable with PROXY_USE_GLM_HISTORY=0.
+export const PROXY_USE_GLM_HISTORY = process.env.PROXY_USE_GLM_HISTORY !== "0";
 // Drop prior conversation turns from incoming messages (default: enabled).
 export const PROXY_STRIP_HISTORY = process.env.PROXY_STRIP_HISTORY !== "0";
 export const PROXY_HISTORY_MAX_MESSAGES = Number(process.env.PROXY_HISTORY_MAX_MESSAGES || "0");
