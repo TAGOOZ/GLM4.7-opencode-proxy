@@ -1,4 +1,5 @@
 import type { FastifyRequest } from "fastify";
+import crypto from "node:crypto";
 import { debugDump, writeDebugDump } from "../debug.js";
 import {
   DEFAULT_MODEL,
@@ -19,11 +20,91 @@ import {
   inferReadToolCall,
   inferSearchToolCall,
 } from "../tools/infer.js";
-import { buildToolRegistry, isNetworkTool, type ToolInfo } from "../tools/registry.js";
+import { buildToolRegistry, findTool, isNetworkTool, type ToolInfo } from "../tools/registry.js";
 import { filterPlannerTools, shouldAllowTodoTools } from "../tools/policy.js";
 import { inferRecentFilePath } from "../tools/path.js";
 import type { RawDispatchContext } from "./rawToolCalls.js";
 import { EMBEDDED_READ_REGEX } from "../constants.js";
+
+const resolveRequiredToolName = (toolChoice: any, toolRegistry: Map<string, ToolInfo>): string | null => {
+  if (!toolChoice || typeof toolChoice !== "object") return null;
+  const type = String(toolChoice.type || "").toLowerCase();
+  if (type && type !== "function") return null;
+  const rawName =
+    typeof toolChoice.function?.name === "string"
+      ? toolChoice.function.name
+      : typeof toolChoice.name === "string"
+        ? toolChoice.name
+        : "";
+  const trimmed = rawName.trim();
+  if (!trimmed) return null;
+  const toolInfo = findTool(toolRegistry, trimmed);
+  if (!toolInfo) return trimmed;
+  return String(toolInfo.tool.function?.name || toolInfo.tool.name || trimmed);
+};
+
+const buildConfirmationScope = (params: {
+  model: string;
+  tools: any[];
+  messages: any[];
+  sessionHints?: string[];
+}): string => {
+  const { model, tools, messages, sessionHints = [] } = params;
+  const toolNames = tools
+    .map((tool: any) => String(tool?.function?.name || tool?.name || "").trim().toLowerCase())
+    .filter(Boolean);
+  const latestUserRaw = (() => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (messages[i]?.role !== "user") continue;
+      const content = messages[i]?.content;
+      if (typeof content === "string") return content.trim();
+      try {
+        return JSON.stringify(content ?? "");
+      } catch {
+        return String(content ?? "");
+      }
+    }
+    return "";
+  })();
+  const stopwords = new Set([
+    "the",
+    "a",
+    "an",
+    "to",
+    "for",
+    "of",
+    "on",
+    "in",
+    "with",
+    "and",
+    "or",
+    "it",
+    "this",
+    "that",
+    "please",
+    "now",
+    "then",
+    "just",
+  ]);
+  const latestUser = [...new Set(
+    String(latestUserRaw || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 3 && !stopwords.has(token)),
+  )]
+    .sort()
+    .slice(0, 12)
+    .join(" ");
+  const payload = JSON.stringify({
+    model: String(model || DEFAULT_MODEL),
+    sessionHints: sessionHints.map((value) => value.trim()).filter(Boolean),
+    toolNames,
+    latestUser,
+  });
+  return crypto.createHash("sha256").update(payload).digest("hex").slice(0, 24);
+};
 
 export type PreparedChatRequest = {
   body: any;
@@ -48,6 +129,9 @@ export type PreparedChatRequest = {
   inferredToolCall: any[] | null;
   shouldAttemptTools: boolean;
   toolChoiceRequired: boolean;
+  toolChoiceFunctionName: string | null;
+  toolChoiceUnknownFunction: string | null;
+  confirmationScope: string;
   systemText: string;
 };
 
@@ -147,15 +231,22 @@ export const prepareChatRequest = async (
     const hasToolMessages = sanitizedMessages.some((msg: any) => msg?.role === "tool" || msg?.tool_call_id);
     if (!hasToolMessages) {
       const systemMessages = sanitizedMessages.filter((msg: any) => msg?.role === "system");
+      const lastAssistantMessage = (() => {
+        for (let i = sanitizedMessages.length - 1; i >= 0; i -= 1) {
+          if (sanitizedMessages[i]?.role === "assistant") return sanitizedMessages[i];
+        }
+        return null;
+      })();
       const lastUserMessage = (() => {
         for (let i = sanitizedMessages.length - 1; i >= 0; i -= 1) {
           if (sanitizedMessages[i]?.role === "user") return sanitizedMessages[i];
         }
         return null;
       })();
+      const compactTail = [lastAssistantMessage, lastUserMessage].filter(Boolean) as any[];
       sanitizedMessages = [
         ...systemMessages,
-        ...(lastUserMessage ? [lastUserMessage] : []),
+        ...compactTail,
       ];
     }
   }
@@ -236,7 +327,25 @@ export const prepareChatRequest = async (
 
   const toolChoiceRequired =
     toolChoice === "required" ||
-    (toolChoice && typeof toolChoice === "object" && toolChoice.type === "function");
+    (toolChoice &&
+      typeof toolChoice === "object" &&
+      (String(toolChoice.type || "").toLowerCase() === "function" ||
+        typeof toolChoice.function?.name === "string"));
+  const toolChoiceFunctionName = resolveRequiredToolName(toolChoice, toolRegistry);
+  const toolChoiceUnknownFunction =
+    toolChoiceRequired && toolChoiceFunctionName && !findTool(toolRegistry, toolChoiceFunctionName)
+      ? toolChoiceFunctionName
+      : null;
+  const confirmationScope = buildConfirmationScope({
+    model,
+    tools: rawTools,
+    messages,
+    sessionHints: [
+      String((request.headers as any)?.["x-opencode-session-id"] || ""),
+      String((request.headers as any)?.["x-session-id"] || ""),
+      String((request.headers as any)?.["x-chat-id"] || ""),
+    ],
+  });
 
   const allowHeuristicTools = PROXY_ALLOW_USER_HEURISTICS && !hasEmbeddedRead && !disableHeuristics;
   const explicitToolCalls =
@@ -280,6 +389,9 @@ export const prepareChatRequest = async (
     inferredToolCall,
     shouldAttemptTools,
     toolChoiceRequired,
+    toolChoiceFunctionName,
+    toolChoiceUnknownFunction,
+    confirmationScope,
     systemText,
   };
 };

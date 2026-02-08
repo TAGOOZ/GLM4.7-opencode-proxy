@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
 import { buildToolRegistry, findTool, normalizeArgsForTool } from "../src/proxy/tools/registry.js";
-import { validateToolCalls } from "../src/proxy/handler/guards.js";
+import { validatePlannerActions, validateToolCalls } from "../src/proxy/handler/guards.js";
 import { createChatCompletionHandler } from "../src/proxy/handler.js";
 
 test("normalizeArgsForTool fills todowrite defaults", () => {
@@ -54,6 +54,24 @@ test("normalizeArgsForTool drops unsupported shell metadata args", () => {
   assert.equal("timeout" in normalized, false);
 });
 
+test("findTool does not fuzzy-match short prefixes", () => {
+  const registry = buildToolRegistry([
+    {
+      function: {
+        name: "read",
+        parameters: { properties: { path: { type: "string" } } },
+      },
+    },
+    {
+      function: {
+        name: "remove",
+        parameters: { properties: { path: { type: "string" } } },
+      },
+    },
+  ]);
+  assert.equal(findTool(registry, "re"), null);
+});
+
 test("bash command-only schema is not blocked by model-added description/workdir args", () => {
   const registry = buildToolRegistry([
     {
@@ -92,6 +110,40 @@ test("bash command-only schema is not blocked by model-added description/workdir
   assert.equal("workdir" in rewrittenArgs, false);
 });
 
+test("unexpected args are sanitized instead of blocking valid call", () => {
+  const registry = buildToolRegistry([
+    {
+      function: {
+        name: "read",
+        parameters: { properties: { path: { type: "string" } } },
+      },
+    },
+  ]);
+
+  const toolCalls = [
+    {
+      id: "call_read_extra_arg",
+      index: 0,
+      type: "function",
+      function: {
+        name: "read",
+        arguments: JSON.stringify({
+          path: "README.md",
+          confidence: 0.9,
+          metadata: { source: "model" },
+        }),
+      },
+    },
+  ];
+
+  const result = validateToolCalls(toolCalls, "planner", registry);
+  assert.equal(result.ok, true);
+  const rewrittenArgs = JSON.parse(String(toolCalls[0].function.arguments));
+  assert.equal(rewrittenArgs.path, "README.md");
+  assert.equal("confidence" in rewrittenArgs, false);
+  assert.equal("metadata" in rewrittenArgs, false);
+});
+
 test("dangerous run_shell requests require confirmation when askquestion exists", () => {
   const registry = buildToolRegistry([
     {
@@ -128,6 +180,104 @@ test("dangerous run_shell requests require confirmation when askquestion exists"
   assert.ok(result.pendingConfirmation);
   assert.equal(result.pendingConfirmation?.blockedReason, "dangerous_command");
   assert.equal(result.pendingConfirmation?.toolCalls?.[0]?.function?.name, "run_shell");
+});
+
+test("missing shell command is confirmable when question tool exists", () => {
+  const registry = buildToolRegistry([
+    {
+      function: {
+        name: "run_shell",
+        parameters: { properties: { command: { type: "string" } } },
+      },
+    },
+    {
+      function: {
+        name: "question",
+        parameters: { properties: { question: { type: "string" } } },
+      },
+    },
+  ]);
+
+  const toolCalls = [
+    {
+      id: "call_test_missing_cmd",
+      index: 0,
+      type: "function",
+      function: {
+        name: "run_shell",
+        arguments: JSON.stringify({}),
+      },
+    },
+  ];
+
+  const result = validateToolCalls(toolCalls, "planner", registry);
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "confirmation_required");
+  assert.equal(result.pendingConfirmation?.blockedReason, "missing_command");
+});
+
+test("heuristic shell command with chained operators is blocked", () => {
+  const registry = buildToolRegistry([
+    {
+      function: {
+        name: "run_shell",
+        parameters: { properties: { command: { type: "string" } } },
+      },
+    },
+  ]);
+
+  const toolCalls = [
+    {
+      id: "call_test",
+      index: 0,
+      type: "function",
+      function: {
+        name: "run_shell",
+        arguments: JSON.stringify({ command: "rg TODO src; touch /tmp/pwned" }),
+      },
+    },
+  ];
+
+  const result = validateToolCalls(toolCalls, "heuristic", registry);
+  assert.equal(result.ok, false);
+  if (result.ok) {
+    assert.fail("Expected mutation_requires_planner_json");
+  }
+  assert.equal(result.reason, "mutation_requires_planner_json");
+});
+
+test("validatePlannerActions tolerates duplicate actions (dedupe happens later)", () => {
+  const result = validatePlannerActions([
+    { tool: "read", args: { path: "README.md" } },
+    { tool: "read", args: { path: "README.md" } },
+  ]);
+  assert.equal(result.ok, true);
+});
+
+test("heuristic read-only shell command is allowed", () => {
+  const registry = buildToolRegistry([
+    {
+      function: {
+        name: "run_shell",
+        parameters: { properties: { command: { type: "string" } } },
+      },
+    },
+  ]);
+
+  const toolCalls = [
+    {
+      id: "call_test_read_only",
+      index: 0,
+      type: "function",
+      function: {
+        name: "run_shell",
+        arguments: JSON.stringify({ command: "cat README.md" }),
+      },
+    },
+  ];
+
+  const result = validateToolCalls(toolCalls, "heuristic", registry);
+  assert.equal(result.ok, true);
 });
 
 test("proxy injects question tool when missing", async () => {
@@ -209,6 +359,44 @@ test("confirmation uses questions array schema when question tool expects it", (
   const confirmationArgs = JSON.parse(String(result.confirmationToolCalls?.[0]?.function?.arguments || "{}"));
   assert.ok(Array.isArray(confirmationArgs.questions));
   assert.equal(typeof confirmationArgs.questions[0]?.question, "string");
+});
+
+test("model-emitted guard-confirmation question is blocked", () => {
+  const registry = buildToolRegistry([
+    {
+      function: {
+        name: "question",
+        parameters: { properties: { questions: { type: "array" } } },
+      },
+    },
+  ]);
+
+  const toolCalls = [
+    {
+      id: "call_question_replay",
+      index: 0,
+      type: "function",
+      function: {
+        name: "question",
+        arguments: JSON.stringify({
+          questions: [
+            {
+              header: "Confirm",
+              id: "confirm_test",
+              question: 'Confirm overriding guard "command_blocked" for command: "cargo build --release"',
+            },
+          ],
+        }),
+      },
+    },
+  ];
+
+  const result = validateToolCalls(toolCalls, "raw", registry);
+  assert.equal(result.ok, false);
+  if (result.ok) {
+    assert.fail("Expected reserved_confirmation_prompt");
+  }
+  assert.equal(result.reason, "reserved_confirmation_prompt");
 });
 
 test("read path inside workspace is normalized from absolute to relative", () => {
@@ -304,6 +492,198 @@ test("bash invalid workdir is dropped before execution", () => {
   assert.equal("workdir" in rewrittenArgs, false);
 });
 
+test("edit without an explicit path is tolerated for downstream recovery", () => {
+  const registry = buildToolRegistry([
+    {
+      function: {
+        name: "edit",
+        parameters: {
+          properties: {
+            filePath: { type: "string" },
+            oldString: { type: "string" },
+            newString: { type: "string" },
+          },
+        },
+      },
+    },
+  ]);
+
+  const toolCalls = [
+    {
+      id: "call_edit_missing_path",
+      index: 0,
+      type: "function",
+      function: {
+        name: "edit",
+        arguments: JSON.stringify({ oldString: "a", newString: "b" }),
+      },
+    },
+  ];
+
+  const result = validateToolCalls(toolCalls, "planner", registry);
+  assert.equal(result.ok, true);
+});
+
+test("list without explicit path defaults to workspace root", () => {
+  const registry = buildToolRegistry([
+    {
+      function: {
+        name: "list",
+        parameters: {
+          properties: {
+            path: { type: "string" },
+          },
+        },
+      },
+    },
+  ]);
+
+  const toolCalls = [
+    {
+      id: "call_list_missing_path",
+      index: 0,
+      type: "function",
+      function: {
+        name: "list",
+        arguments: JSON.stringify({}),
+      },
+    },
+  ];
+
+  const result = validateToolCalls(toolCalls, "planner", registry);
+  assert.equal(result.ok, true);
+  const rewrittenArgs = JSON.parse(String(toolCalls[0].function.arguments));
+  assert.equal(rewrittenArgs.path, ".");
+});
+
+test("read without explicit path defaults to workspace root", () => {
+  const registry = buildToolRegistry([
+    {
+      function: {
+        name: "read",
+        parameters: {
+          properties: {
+            path: { type: "string" },
+          },
+        },
+      },
+    },
+  ]);
+
+  const toolCalls = [
+    {
+      id: "call_read_missing_path",
+      index: 0,
+      type: "function",
+      function: {
+        name: "read",
+        arguments: JSON.stringify({}),
+      },
+    },
+  ];
+
+  const result = validateToolCalls(toolCalls, "planner", registry);
+  assert.equal(result.ok, true);
+  const rewrittenArgs = JSON.parse(String(toolCalls[0].function.arguments));
+  assert.equal(rewrittenArgs.path, ".");
+});
+
+test("glob accepts brace numeric ranges", () => {
+  const registry = buildToolRegistry([
+    {
+      function: {
+        name: "glob",
+        parameters: {
+          properties: {
+            pattern: { type: "string" },
+          },
+        },
+      },
+    },
+  ]);
+
+  const toolCalls = [
+    {
+      id: "call_glob_brace_range",
+      index: 0,
+      type: "function",
+      function: {
+        name: "glob",
+        arguments: JSON.stringify({ pattern: "src/file{1..3}.ts" }),
+      },
+    },
+  ];
+
+  const result = validateToolCalls(toolCalls, "planner", registry);
+  assert.equal(result.ok, true);
+});
+
+test("apply_patch with outside-workspace target in patch text is blocked", () => {
+  const registry = buildToolRegistry([
+    {
+      function: {
+        name: "apply_patch",
+        parameters: { properties: { patch: { type: "string" } } },
+      },
+    },
+  ]);
+
+  const patch = [
+    "*** Begin Patch",
+    "*** Update File: ../../etc/passwd",
+    "@@",
+    "-root:x:0:0",
+    "+root:x:0:0:patched",
+    "*** End Patch",
+  ].join("\n");
+  const toolCalls = [
+    {
+      id: "call_apply_patch_outside",
+      index: 0,
+      type: "function",
+      function: {
+        name: "apply_patch",
+        arguments: JSON.stringify({ patch }),
+      },
+    },
+  ];
+
+  const result = validateToolCalls(toolCalls, "planner", registry);
+  assert.equal(result.ok, false);
+  if (result.ok) {
+    assert.fail("Expected path_outside_workspace guard failure");
+  }
+  assert.equal(result.reason, "path_outside_workspace");
+});
+
+test("apply_patch without explicit target path is tolerated for downstream recovery", () => {
+  const registry = buildToolRegistry([
+    {
+      function: {
+        name: "apply_patch",
+        parameters: { properties: { patch: { type: "string" } } },
+      },
+    },
+  ]);
+
+  const toolCalls = [
+    {
+      id: "call_apply_patch_missing_path",
+      index: 0,
+      type: "function",
+      function: {
+        name: "apply_patch",
+        arguments: JSON.stringify({
+          patch: "*** Begin Patch\n@@\n-old\n+new\n*** End Patch",
+        }),
+      },
+    },
+  ];
+
+  const result = validateToolCalls(toolCalls, "planner", registry);
+  assert.equal(result.ok, true);
+});
+
 test("write without content is blocked directly (no confirmation replay)", () => {
   const registry = buildToolRegistry([
     {
@@ -332,7 +712,41 @@ test("write without content is blocked directly (no confirmation replay)", () =>
   assert.equal(Array.isArray(result.confirmationToolCalls), false);
 });
 
-test("write with invalid JSON arguments is blocked directly (no confirmation replay)", () => {
+test("write missing content is confirmable when question tool exists", () => {
+  const registry = buildToolRegistry([
+    {
+      function: {
+        name: "write",
+        parameters: { properties: { filePath: { type: "string" }, content: { type: "string" } } },
+      },
+    },
+    {
+      function: {
+        name: "question",
+        parameters: { properties: { question: { type: "string" } } },
+      },
+    },
+  ]);
+
+  const toolCalls = [
+    {
+      id: "call_write_missing_content",
+      index: 0,
+      type: "function",
+      function: {
+        name: "write",
+        arguments: JSON.stringify({ filePath: "snake_game/src/main.rs" }),
+      },
+    },
+  ];
+
+  const result = validateToolCalls(toolCalls, "raw", registry);
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "confirmation_required");
+  assert.equal(result.pendingConfirmation?.blockedReason, "missing_content");
+});
+
+test("write with common malformed JSON arguments is recovered", () => {
   const registry = buildToolRegistry([
     {
       function: {
@@ -355,7 +769,70 @@ test("write with invalid JSON arguments is blocked directly (no confirmation rep
   ];
 
   const result = validateToolCalls(toolCalls, "raw", registry);
+  assert.equal(result.ok, true);
+  const rewrittenArgs = JSON.parse(String(toolCalls[0].function.arguments));
+  assert.equal(rewrittenArgs.filePath, "snake_game/src/main.rs");
+  assert.equal(String(rewrittenArgs.content).includes("println!(\"oops\")"), true);
+});
+
+test("write with irrecoverable malformed arguments is blocked directly", () => {
+  const registry = buildToolRegistry([
+    {
+      function: {
+        name: "write",
+        parameters: { properties: { filePath: { type: "string" }, content: { type: "string" } } },
+      },
+    },
+  ]);
+
+  const toolCalls = [
+    {
+      id: "call_write_bad_irrecoverable",
+      index: 0,
+      type: "function",
+      function: {
+        name: "write",
+        arguments: "{\"filePath\":\"snake_game/src/main.rs\",\"content\":\"unterminated\"",
+      },
+    },
+  ];
+
+  const result = validateToolCalls(toolCalls, "raw", registry);
   assert.equal(result.ok, false);
   assert.equal(result.reason, "invalid_tool_args");
   assert.equal(Array.isArray(result.confirmationToolCalls), false);
+});
+
+test("invalid tool args are confirmable when question tool exists", () => {
+  const registry = buildToolRegistry([
+    {
+      function: {
+        name: "read",
+        parameters: { properties: { path: { type: "string" } } },
+      },
+    },
+    {
+      function: {
+        name: "question",
+        parameters: { properties: { question: { type: "string" } } },
+      },
+    },
+  ]);
+
+  const toolCalls = [
+    {
+      id: "call_read_invalid_args",
+      index: 0,
+      type: "function",
+      function: {
+        name: "read",
+        arguments: "prefix {\"path\":\"README.md\"} suffix",
+      },
+    },
+  ];
+
+  const result = validateToolCalls(toolCalls, "raw", registry);
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "confirmation_required");
+  assert.equal(result.pendingConfirmation?.blockedReason, "invalid_tool_args");
 });
