@@ -1,313 +1,281 @@
-# GLM 4.7 CLI Tool
+# GLM 4.7 OpenCode Proxy (TypeScript-first)
 
-A command-line interface for interacting with the GLM4.7 API at [chat.z.ai](https://chat.z.ai).
+This repository provides an OpenAI-compatible proxy and CLI for GLM on `chat.z.ai`.
 
-## Installation (TypeScript, Primary)
+## Fast Favorite Start (Go Flow)
 
-The TypeScript proxy/CLI is the main, actively developed path. The Python proxy was the initial MVP and is kept for compatibility.
+Use this exact order:
 
+1. Install and build.
 ```bash
-cd GLM4.7-opencode-proxy
 npm run install:all
 npm run build:all
 ```
 
-Start the proxy:
-
+2. Install Playwright once, then login from CLI.
 ```bash
 cd ts_glm
+npx playwright install
+npm run start:cli -- login
+```
+
+3. Start the local GLM proxy.
+```bash
 npm run start:proxy
 ```
 
-Run the CLI:
+4. Open OpenCode, choose model `glm-local/glm-4.7`, then go.
+```bash
+opencode
+```
+
+5. Optional quick one-liner test (no UI selection needed).
+```bash
+opencode run -m glm-local/glm-4.7 "Say hello in one line"
+```
+
+## README Pillars
+
+This README is organized around 5 code-backed pillars:
+
+1. **Runtime map**: where request handling, planning, guards, and confirmation logic actually live.
+2. **Verified runbook**: commands that match current `package.json` scripts and CLI commands.
+3. **Guard behavior**: what is allowed, what is confirmed, and what is blocked.
+4. **Configuration truth table**: env vars and defaults from `ts_glm/src/proxy/constants.ts`.
+5. **Failure-driven troubleshooting**: common issues (including `question` payload shape errors) with valid payload examples.
+
+## 1) Runtime Map (Source of Truth)
+
+TypeScript is the active implementation path.
+
+| Area | Source |
+|---|---|
+| Proxy entrypoint | `ts_glm/src/proxy/index.ts` |
+| Main request handler | `ts_glm/src/proxy/handler.ts` |
+| Request prep (tools, directives, history, heuristics) | `ts_glm/src/proxy/handler/request.ts` |
+| Planner flow | `ts_glm/src/proxy/handler/plannerFlow.ts` |
+| Raw tool-call dispatch | `ts_glm/src/proxy/handler/rawDispatchFlow.ts` |
+| Tool-call validation and guards | `ts_glm/src/proxy/handler/guardValidation.ts` |
+| Mutation boundary logic | `ts_glm/src/proxy/handler/guardMutation.ts` |
+| Confirmation builder | `ts_glm/src/proxy/handler/guardValidation/confirm.ts` |
+| Shell safety (allowlist+denylist) | `ts_glm/src/proxy/tools/shellSafety.ts`, `web_wrapper/src/safety.ts` |
+| Path safety | `ts_glm/src/proxy/tools/pathSafety.ts` |
+| CLI entrypoint | `ts_glm/src/cli.ts` |
+
+Python (`glm_cli/`, `glm_proxy/`) remains legacy-compatible and read-only by default.
+
+## 2) Verified Runbook
+
+### Install and build
 
 ```bash
-cd ts_glm
-npm run start:cli -- login
-npm run start:cli -- chat <CHAT_ID> "Hello"
+npm run install:all
+npm run build:all
 ```
 
-First-time Playwright setup (for `login`):
-
-```bash
-cd ts_glm
-npx playwright install
-```
-
-### TypeScript CLI Login Notes
-
-If Google blocks the automated browser with a "This browser or app may not be secure" message, the Playwright login flow will not complete. In that case, use a real browser to obtain the token and set it with the CLI:
-
-```bash
-npm --prefix ts_glm run start:cli -- config --token "YOUR_TOKEN"
-```
-
-You can also try launching with a real Chrome channel and a dedicated profile:
-
-```bash
-npm --prefix ts_glm run start:cli -- login --channel chrome
-```
-
-This uses a separate profile directory under `~/.config/glm-cli/` by default.
-
-If Google blocks automated login, the CLI will auto-launch Chrome with remote debugging by default. You can also connect to an already-running Chrome session:
-
-```bash
-google-chrome --user-data-dir=~/.config/glm-cli/chrome-debug --remote-debugging-port=9222
-npm --prefix ts_glm run start:cli -- login --connect-cdp http://127.0.0.1:9222
-```
-
-Log in to chat.z.ai in that browser window, then return to the CLI.
-
-If Chrome/Chromium is not on your PATH, pass a binary explicitly:
-
-```bash
-npm --prefix ts_glm run start:cli -- login --chrome-bin /opt/google/chrome/chrome
-```
-
-## Thinking and Web Search Flags (TypeScript Proxy)
-
-The proxy accepts GLM flags for thinking and web search. You can pass them in the request body as either top-level fields or under `features`.
-
-Thinking is enabled by default. You can still toggle it explicitly:
-
-```json
-{
-  "model": "glm-4.7",
-  "messages": [{"role":"user","content":"Explain this"}],
-  "enable_thinking": true
-}
-```
-
-Enable/disable web search (allowed by default):
-
-```json
-{
-  "model": "glm-4.7",
-  "messages": [{"role":"user","content":"Latest news on X"}],
-  "web_search": true,
-  "auto_web_search": true
-}
-```
-
-To block web search through the proxy, set:
-
-```bash
-export PROXY_ALLOW_WEB_SEARCH=0
-```
-
-### TUI Quick Toggles
-
-In OpenCode TUI (or any client), you can add a directive line to the user prompt to toggle flags:
-
-```
-/thinking on
-/search on
-/auto-search on
-```
-
-These directive lines are stripped before sending content to the model, and only affect the proxy flags.
-
-OpenCode renders `reasoning_content` in a dedicated thinking panel. The proxy now streams thinking there and keeps the final answer separate. If you want faster responses, use `/thinking off` (thinking mode can add noticeable latency).
-
-## Security Model (Proxy + Runner)
-
-This repo follows an OpenCode-style safety model with agentic defaults:
-
-- **Mutations require validated planner JSON unless explicit/raw mutation flags are enabled (enabled by default).**
-- **Heuristic allowlist:** `read`, `list/glob`, `grep/search` only.
-- **Runner is the security boundary:** repo-root jail, sensitive-path denylist, output redaction, and size caps.
-**Confirmations are handled by the client** (e.g., OpenCode permission prompts).
-This proxy does not require custom tool arguments for approvals.
-
-Additional proxy safety toggles:
-
-- `PROXY_ALLOW_WEB_SEARCH=0` block webfetch/web_search tools (default on).
-- `PROXY_ALLOW_NETWORK=0` block networked shell commands (default on).
-- `PROXY_ALLOW_EXPLICIT_MUTATIONS=0` block mutation tools from explicit tool calls.
-- `PROXY_ALLOW_RAW_MUTATIONS=0` block mutation tools from raw tool_calls.
-- `PROXY_ALLOW_ANY_COMMAND=0` enforce shell allowlist/denylist checks.
-- `PROXY_CONFIRM_DANGEROUS_COMMANDS=0` disable confirmation flow for dangerous commands and deletes.
-- `PROXY_NEW_CHAT_PER_REQUEST=0` reuse a single GLM chat across requests.
-- `PROXY_STRIP_HISTORY=0` keep full incoming message history (default keeps only latest user turn unless tool messages are present).
-
-Examples:
-
-```json
-{"tool":"read","args":{"filePath":"README.md"}}
-```
-
-```json
-{"tool":"write","args":{"filePath":"notes.txt","content":"..."}}
-```
-
-```json
-{"tool":"run_shell","args":{"command":"mv foo bar"}}
-```
-
-Note: `rm` is not in the default allowlist if you enable allowlist checks.
-
-## Quick Start (Token)
-
-Pick one of these:
-
-### Option A: Env var (simplest)
-
-```bash
-cp .env.example .env
-# edit .env and set GLM_TOKEN=YOUR_TOKEN
-```
-
-or:
-
-```bash
-export GLM_TOKEN="YOUR_TOKEN"
-```
-
-### Option B: CLI config
+### Configure token
 
 ```bash
 npm --prefix ts_glm run start:cli -- config --token "YOUR_TOKEN"
 ```
 
-## Getting Your Token
+Token loading order is:
+1. `GLM_TOKEN` env var
+2. `~/.config/glm-cli/config.json`
 
-1. Go to [chat.z.ai](https://chat.z.ai) and log in
-2. Open browser DevTools (F12) → Network tab
-3. Make any request and find the `Authorization` header
-4. Copy the token after `Bearer `
+The CLI also writes `GLM_TOKEN=...` into `.env` in repo root when possible.
 
-Alternatively, check your cookies for the `token` value.
-
-## Usage (TypeScript CLI)
-
-### Configure Token
+### Start proxy
 
 ```bash
-npm --prefix ts_glm run start:cli -- config --token "YOUR_TOKEN_HERE"
+npm --prefix ts_glm run start:proxy
 ```
 
-### Login (Browser / Google OAuth)
+Default bind is `http://127.0.0.1:8787` (`HOST` and `PORT` are supported).
+
+### Start CLI
 
 ```bash
-npm --prefix ts_glm run start:cli -- login
-npm --prefix ts_glm run start:cli -- login --check
-```
-
-If this is your first time using Playwright:
-
-```bash
-npx playwright install
-```
-
-This command saves the token to both:
-- `~/.config/glm-cli/config.json`
-- `.env` (as `GLM_TOKEN=...`)
-
-### List Chats
-
-```bash
+npm --prefix ts_glm run start:cli -- --help
 npm --prefix ts_glm run start:cli -- chats
-npm --prefix ts_glm run start:cli -- chats --page 2
-```
-
-### Create New Chat
-
-```bash
-npm --prefix ts_glm run start:cli -- new
 npm --prefix ts_glm run start:cli -- new --title "My Chat" --model glm-4.7
-```
-
-### Send a Message
-
-```bash
-npm --prefix ts_glm run start:cli -- chat CHAT_ID "Hello, how are you?"
-npm --prefix ts_glm run start:cli -- chat CHAT_ID "What is Python?" --no-thinking
-```
-
-### Interactive Mode
-
-```bash
+npm --prefix ts_glm run start:cli -- chat CHAT_ID "Hello"
 npm --prefix ts_glm run start:cli -- interactive
-npm --prefix ts_glm run start:cli -- interactive --chat-id EXISTING_CHAT_ID
-```
-
-Commands in interactive mode:
-- `/quit` - Exit
-- `/clear` - Clear conversation history
-
-### Check Current User
-
-```bash
 npm --prefix ts_glm run start:cli -- whoami
 ```
 
-## Available Models
-
-- `glm-4.7` (default) - Latest GLM model with thinking capability
-- `glm-4.6` - Previous version
-
-## Features
-
-- **Streaming responses** - See responses as they're generated
-- **Thinking mode** - View the model's reasoning process (separate OpenCode thinking panel)
-- **Interactive mode** - REPL-style conversation (`npm --prefix ts_glm run start:cli -- interactive`)
-- **Rich terminal output** - Beautiful formatting with colors
-
-## Configuration
-
-Config is stored at `~/.config/glm-cli/config.json`
-
-## OpenCode Setup (Local Proxy)
-
-Start the proxy (TypeScript):
+### Login (Playwright)
 
 ```bash
 cd ts_glm
-npm run start:proxy
+npx playwright install
+npm run start:cli -- login
 ```
 
-Or start the proxy (Python, legacy read-only mode):
+Useful options from `login` command:
+- `--check`
+- `--channel <chrome|chromium|msedge>`
+- `--connect-cdp <url>`
+- `--remote-debugging-port <port>`
+- `--chrome-bin <path>`
+- `--allow-guest`
+
+## 3) Proxy API + Guard Model
+
+### OpenAI-compatible endpoints
+
+- `GET /v1/models` and `GET /models`
+- `POST /v1/chat/completions` and `POST /chat/completions`
+
+### Minimal API call
 
 ```bash
-source venv/bin/activate
-python3 -m uvicorn glm_proxy.server:app --host 127.0.0.1 --port 8787
+curl -X POST http://127.0.0.1:8787/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "glm-4.7",
+    "messages": [{"role":"user","content":"Say hello"}],
+    "stream": false
+  }'
 ```
 
-Use `opencode.json` and select provider `glm-local`.
+### Thinking and search toggles
 
-**Note**: For detailed usage instructions, including file attachment workarounds and troubleshooting, see [OPENCODE_USAGE.md](OPENCODE_USAGE.md).
+You can pass flags directly in request body (`enable_thinking`, `web_search`, `auto_web_search`) or with prompt directives:
 
-## Python (MVP / Legacy)
+- `/thinking on|off`
+- `/think on|off`
+- `/search on|off`
+- `/web on|off`
+- `/auto-search on|off`
 
-The Python CLI/proxy is the original MVP and is now legacy.
+Directives are stripped before model content is sent.
 
-Default behavior is read-only:
-- Python proxy does not emit tool calls.
-- Python CLI mutation/auth commands are blocked (`config`, `login`, `new`, `chat`, `interactive`).
-- Read-style commands remain available (`chats`, `whoami`).
+### Guard behavior (current)
+
+- Tool calls are validated by `validateToolCalls()`.
+- Guard failures are usually confirmable if a confirmation tool exists (`question`, `askquestion`, `confirm`, etc.).
+- Non-confirmable guard reasons are limited (`unexpected_arg`, `invalid_content_type`).
+- `read`/`list` with missing path are auto-repaired to `"."`.
+- `write` without content still requires confirmation (or blocks if no confirm tool).
+- `tool_choice` mismatches are routed through confirmation flow when possible.
+- Unknown `tool_choice` function name is returned as content error early.
+- Planner mutation boundary allows at most one mutation action in a planner response.
+- `PROXY_MAX_ACTIONS_PER_TURN` default is unlimited (`0` means no cap).
+- Raw tool-call early gate no longer drops unknown non-mutation tool names.
+- Shell allowlist checks are active only when `PROXY_ALLOW_ANY_COMMAND=0`.
+- `rm/rmdir/del` are only treated as dangerous by heuristic when high-risk flags/targets are present.
+
+## 4) Confirmation Payloads (`question` tool)
+
+If client already exposes a `question`/`askquestion` tool, proxy uses that schema. If no confirmation tool is provided, proxy injects a minimal fallback:
+
+```json
+{
+  "question": "Proceed?"
+}
+```
+
+If your tool expects `questions[]`, each option must be an object (not a plain string):
+
+```json
+{
+  "questions": [
+    {
+      "header": "Confirm",
+      "id": "confirm_abc123",
+      "question": "Proceed with this action?",
+      "options": [
+        {
+          "label": "Proceed (Recommended)",
+          "description": "Approve the action and continue."
+        },
+        {
+          "label": "Cancel",
+          "description": "Decline the action and stop."
+        }
+      ]
+    }
+  ]
+}
+```
+
+If you pass string options like `"Yes"`, schema validation can fail with errors like “expected object, received string”.
+
+## 5) Config Truth Table
+
+Key proxy env vars and defaults:
+
+| Env var | Default | Effect |
+|---|---|---|
+| `PROXY_DEBUG` | `0` | Enable proxy debug logs/dumps |
+| `PROXY_NEW_CHAT_PER_REQUEST` | `0` | Create fresh GLM chat per request |
+| `PROXY_ALLOW_WEB_SEARCH` | `1` | Allow web tools (`webfetch`, `websearch`) |
+| `PROXY_ALLOW_NETWORK` | `1` | Allow networked shell commands |
+| `PROXY_ALLOW_EXPLICIT_MUTATIONS` | `1` | Allow mutation tools from explicit tool calls |
+| `PROXY_ALLOW_RAW_MUTATIONS` | `1` | Allow mutation tools from raw tool_calls |
+| `PROXY_ALLOW_ANY_COMMAND` | `1` | Skip shell allowlist-first checks |
+| `PROXY_CONFIRM_DANGEROUS_COMMANDS` | `1` | Require confirmation for dangerous commands |
+| `PROXY_MAX_ACTIONS_PER_TURN` | `0` | Max actions per turn (`<=0` = unlimited) |
+| `PROXY_TOOL_LOOP_LIMIT` | `0` | Max tool loop rounds (`<=0` = unlimited) |
+| `PROXY_PLANNER_MAX_RETRIES` | `2` | Planner parse retry attempts |
+| `PROXY_PLANNER_COERCE` | `1` | Coerce planner failures into direct final answer |
+| `PROXY_ALLOW_USER_HEURISTICS` | `1` | Enable fallback heuristic tool inference |
+| `PROXY_USE_GLM_HISTORY` | `1` | Reuse GLM-side history across requests |
+| `PROXY_STRIP_HISTORY` | `0` | Strip prior history from incoming messages |
+| `PROXY_DEFAULT_THINKING` | `1` | Enable thinking by default |
+| `PROXY_WORKSPACE_ROOT` | unset | Optional workspace roots for path containment |
+
+Context sizing vars also exist (`PROXY_CONTEXT_*`) in `ts_glm/src/proxy/constants.ts`.
+
+## OpenCode Setup
+
+`opencode.json` is preconfigured for:
+- Provider: `glm-local`
+- Base URL: `http://127.0.0.1:8787/v1`
+- Model: `glm-4.7`
+
+Run:
 
 ```bash
-cd GLM4.7-opencode-proxy
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+opencode run -m glm-local/glm-4.7 "Your prompt"
 ```
 
-Python CLI examples (read-only by default):
+For detailed OpenCode-specific notes and file-attachment workarounds, see `OPENCODE_USAGE.md`.
 
+## Validation Matrix (Run What You Touch)
+
+- Changes in `web_wrapper/`:
 ```bash
-python -m glm_cli.cli chats
-python -m glm_cli.cli whoami
+npm --prefix web_wrapper run test
 ```
 
-Python proxy:
-
+- Changes in `ts_glm/src/`:
 ```bash
-python3 -m uvicorn glm_proxy.server:app --host 127.0.0.1 --port 8787
+npm --prefix ts_glm run build
+npm --prefix ts_glm run test
 ```
 
-Temporary legacy override (not recommended):
+- Cross-cutting protocol/request format changes:
+```bash
+npm run build:all
+npm --prefix web_wrapper run test
+```
+
+- Python legacy changes:
+```bash
+python -m py_compile glm_cli/*.py glm_proxy/*.py
+```
+
+## Python Legacy Path
+
+Python implementations (`glm_cli/`, `glm_proxy/`) are legacy-compatible.
+
+By default, Python mode is read-only for safer behavior:
+- Proxy tool-call emission is disabled.
+- Mutation/auth commands are blocked unless explicitly re-enabled.
+
+To temporarily re-enable legacy mutation/tool behavior:
 
 ```bash
 export GLM_PY_LEGACY_ENABLE_MUTATIONS=1
