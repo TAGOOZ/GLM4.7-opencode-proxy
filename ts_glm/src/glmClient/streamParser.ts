@@ -16,6 +16,21 @@ export async function* parseCompletionStream(
   const parser = createThinkingParser();
   const emitter = createChunkEmitter();
 
+  const contentPartToText = (value: unknown): string => {
+    if (typeof value === "string") return value;
+    if (!value || typeof value !== "object") return "";
+    const part = value as Record<string, unknown>;
+    if (typeof part.text === "string") return part.text;
+    if (typeof part.content === "string") return part.content;
+    return "";
+  };
+
+  const deltaContentToText = (value: unknown): string => {
+    if (typeof value === "string") return value;
+    if (Array.isArray(value)) return value.map((item) => contentPartToText(item)).join("");
+    return contentPartToText(value);
+  };
+
   const handleData = (dataStr: string): { chunks: StreamChunk[]; done: boolean } => {
     if (dataStr === "[DONE]") {
       return { chunks: [], done: true };
@@ -26,7 +41,7 @@ export async function* parseCompletionStream(
       if (data.choices) {
         for (const choice of data.choices) {
           const delta = choice.delta || {};
-          const content = delta.content || "";
+          const content = deltaContentToText(delta.content);
           if (!content) continue;
           out.push(...parser.push(content));
         }
@@ -34,7 +49,7 @@ export async function* parseCompletionStream(
       }
       if (data.type === "chat:completion") {
         const delta = data.data || {};
-        const content = delta.delta_content || delta.content || delta.edit_content || "";
+        const content = deltaContentToText(delta.delta_content ?? delta.content ?? delta.edit_content);
         const phase = delta.phase;
         let done = false;
         let allowContent = true;
@@ -52,10 +67,29 @@ export async function* parseCompletionStream(
         }
         return { chunks: out, done };
       }
-    } catch {
+    } catch (error) {
+      if (debugStream) {
+        const reason = error instanceof Error ? error.message : String(error);
+        const snippet = dataStr.length > 500 ? `${dataStr.slice(0, 500)}...` : dataStr;
+        console.error(`[glm_debug] stream_json_parse_error: ${reason}; data: ${snippet}`);
+      }
       return { chunks: [], done: false };
     }
     return { chunks: [], done: false };
+  };
+
+  const processDataLines = (dataLines: string[]): { chunks: StreamChunk[]; done: boolean } => {
+    const emitted: StreamChunk[] = [];
+    for (const dataStr of dataLines) {
+      const result = handleData(dataStr);
+      if (result.done) {
+        return { chunks: emitted, done: true };
+      }
+      if (result.chunks) {
+        emitted.push(...emitter.emit(result.chunks));
+      }
+    }
+    return { chunks: emitted, done: false };
   };
 
   while (true) {
@@ -66,41 +100,25 @@ export async function* parseCompletionStream(
     const parsed = parseSseLines(buffer, debugStream);
     buffer = parsed.rest;
 
-    for (const dataStr of parsed.dataLines) {
-      const result = handleData(dataStr);
-      if (result.done) {
-        yield { type: "done", data: "" };
-        return;
-      }
-      if (result.chunks) {
-        for (const chunk of emitter.emit(result.chunks)) {
-          yield chunk;
-        }
-      }
-      if (result.done) {
-        yield { type: "done", data: "" };
-        return;
-      }
+    const result = processDataLines(parsed.dataLines);
+    for (const chunk of result.chunks) {
+      yield chunk;
+    }
+    if (result.done) {
+      yield { type: "done", data: "" };
+      return;
     }
   }
 
   buffer += decoder.decode();
   const flushed = parseSseLines(buffer, debugStream, { flush: true });
-  for (const dataStr of flushed.dataLines) {
-    const result = handleData(dataStr);
-    if (result.done) {
-      yield { type: "done", data: "" };
-      return;
-    }
-    if (result.chunks) {
-      for (const chunk of emitter.emit(result.chunks)) {
-        yield chunk;
-      }
-    }
-    if (result.done) {
-      yield { type: "done", data: "" };
-      return;
-    }
+  const flushedResult = processDataLines(flushed.dataLines);
+  for (const chunk of flushedResult.chunks) {
+    yield chunk;
+  }
+  if (flushedResult.done) {
+    yield { type: "done", data: "" };
+    return;
   }
 
   for (const chunk of emitter.emit(parser.finalize())) {

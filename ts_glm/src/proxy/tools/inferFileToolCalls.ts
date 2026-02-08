@@ -1,7 +1,6 @@
-import crypto from "crypto";
 import { findTool, type ToolInfo } from "./registry.js";
 import { isSensitivePath } from "./pathSafety.js";
-import { extractDirPath, extractFilePath, pickArgKey } from "./inferUtils.js";
+import { buildSingleToolCall, extractDirPath, extractFilePath, pickArgKey } from "./inferUtils.js";
 
 const inferReadToolCall = (registry: Map<string, ToolInfo>, userText: string) => {
   const lowered = userText.toLowerCase();
@@ -21,14 +20,7 @@ const inferReadToolCall = (registry: Map<string, ToolInfo>, userText: string) =>
   if (isSensitivePath(path)) return null;
   const key = pickArgKey(toolInfo, ["filePath", "path"]);
   const toolName = toolInfo.tool.function?.name || toolInfo.tool.name || "read";
-  return [
-    {
-      id: `call_${crypto.randomUUID().slice(0, 8)}`,
-      index: 0,
-      type: "function",
-      function: { name: toolName, arguments: JSON.stringify({ [key]: path }) },
-    },
-  ];
+  return buildSingleToolCall(toolName, { [key]: path });
 };
 
 const inferWriteToolCall = (registry: Map<string, ToolInfo>, userText: string) => {
@@ -54,14 +46,7 @@ const inferWriteToolCall = (registry: Map<string, ToolInfo>, userText: string) =
     if (!filePath || !content) continue;
     const pathKey = pickArgKey(toolInfo, ["filePath", "path"]);
     const toolName = toolInfo.tool.function?.name || toolInfo.tool.name || "write";
-    return [
-      {
-        id: `call_${crypto.randomUUID().slice(0, 8)}`,
-        index: 0,
-        type: "function",
-        function: { name: toolName, arguments: JSON.stringify({ [pathKey]: filePath, content }) },
-      },
-    ];
+    return buildSingleToolCall(toolName, { [pathKey]: filePath, content });
   }
   // Fallback: "create file X" without content -> use placeholder
   const simple = userText.match(/create (?:a )?file\s+([\w./-]+)/i);
@@ -69,14 +54,7 @@ const inferWriteToolCall = (registry: Map<string, ToolInfo>, userText: string) =
     const filePath = simple[1];
     const pathKey = pickArgKey(toolInfo, ["filePath", "path"]);
     const toolName = toolInfo.tool.function?.name || toolInfo.tool.name || "write";
-    return [
-      {
-        id: `call_${crypto.randomUUID().slice(0, 8)}`,
-        index: 0,
-        type: "function",
-        function: { name: toolName, arguments: JSON.stringify({ [pathKey]: filePath, content: "" }) },
-      },
-    ];
+    return buildSingleToolCall(toolName, { [pathKey]: filePath, content: "" });
   }
   return null;
 };
@@ -105,15 +83,7 @@ const inferListToolCall = (registry: Map<string, ToolInfo>, userText: string) =>
   const dirPath = extractDirPath(userText) || ".";
   const pattern = dirPath === "." || dirPath === "./" ? "**/*" : `${dirPath.replace(/\/$/, "")}/**/*`;
   const args = key === "pattern" ? { [key]: pattern } : { [key]: dirPath };
-  return [
-    {
-      id: `call_${crypto.randomUUID().slice(0, 8)}`,
-      index: 0,
-      type: "function",
-      function: { name: toolInfo.tool.function?.name || toolInfo.tool.name || "glob", arguments: JSON.stringify(args) },
-    },
-  ];
+  return buildSingleToolCall(toolInfo.tool.function?.name || toolInfo.tool.name || "glob", args);
 };
 
 export { inferListToolCall, inferReadToolCall, inferWriteToolCall };
-

@@ -1,9 +1,8 @@
 import crypto from "crypto";
-import { PROXY_DEBUG, PROXY_INCLUDE_USAGE } from "../constants.js";
+import { PROXY_INCLUDE_USAGE } from "../constants.js";
 import { parseRawToolCalls } from "../tools/parse.js";
-import { isRawToolCallsAllowed } from "./guards.js";
-import { prepareRawToolCalls } from "./rawToolCalls.js";
-import { buildToolUsage, buildUsage } from "./utils.js";
+import { buildUsage } from "./utils.js";
+import { tryDispatchRawToolCalls } from "./rawDispatchFlow.js";
 import type {
   FallbackFlowDeps,
   NonStreamFallbackContext,
@@ -30,43 +29,33 @@ export const createFallbackFlows = (deps: FallbackFlowDeps) => {
       enableThinkingFinal,
       featureOverrides,
       thinkingRef,
+      toolChoiceFunctionName,
+      confirmationScope,
     } = ctx;
     const activeChatId = await getChatId();
     if (tools.length > 0) {
       const fullText = await collectModelResponse(activeChatId, glmMessages);
-      const rawToolCalls = parseRawToolCalls(fullText, toolRegistry);
-      if (rawToolCalls) {
-        if (isRawToolCallsAllowed(rawToolCalls)) {
-          const prepared = prepareRawToolCalls(rawToolCalls, rawDispatchContext, toolRegistry, {
-            signature: lastRawDispatchSignature,
-            user: lastRawDispatchUser,
-          });
-          if (prepared) {
-            return deps.guardAndSendToolCalls(
-              reply,
-              prepared.toolCalls,
-              model,
-              true,
-              streamHeaders,
-              buildToolUsage(responsePromptTokens, prepared.toolCalls),
-              responsePromptTokens,
-              glmStats,
-              "raw",
-              toolRegistry,
-              {
-                ...rawDispatchContext,
-                rawSignature: prepared.signature,
-              },
-              thinkingRef.value,
-            );
-          }
-          if (PROXY_DEBUG) {
-            console.log("proxy_debug raw_tool_calls_suppressed: true");
-          }
-        }
-        if (PROXY_DEBUG) {
-          console.log("proxy_debug raw_tool_calls_blocked: true");
-        }
+      const rawDispatch = tryDispatchRawToolCalls({
+        rawToolCalls: parseRawToolCalls(fullText, toolRegistry, {
+          allowProseEnvelope: false,
+        }),
+        reply,
+        model,
+        stream: true,
+        streamHeaders,
+        promptTokens: responsePromptTokens,
+        stats: glmStats,
+        toolRegistry,
+        rawDispatchContext,
+        lastRawDispatchSignature,
+        lastRawDispatchUser,
+        guardAndSendToolCalls: deps.guardAndSendToolCalls,
+        reasoningContent: thinkingRef.value,
+        requiredToolName: toolChoiceFunctionName,
+        confirmationScope,
+      });
+      if (rawDispatch) {
+        return rawDispatch;
       }
       return deps.sendStreamContent(
         reply,
@@ -161,35 +150,33 @@ export const createFallbackFlows = (deps: FallbackFlowDeps) => {
       collectModelResponse,
       getChatId,
       thinkingRef,
+      toolChoiceFunctionName,
+      confirmationScope,
     } = ctx;
     const activeChatId = await getChatId();
     const content = await collectModelResponse(activeChatId, glmMessages);
     if (tools.length > 0) {
-      const rawToolCalls = parseRawToolCalls(content, toolRegistry);
-      if (rawToolCalls && isRawToolCallsAllowed(rawToolCalls)) {
-        const prepared = prepareRawToolCalls(rawToolCalls, rawDispatchContext, toolRegistry, {
-          signature: lastRawDispatchSignature,
-          user: lastRawDispatchUser,
-        });
-        if (prepared) {
-          return deps.guardAndSendToolCalls(
-            reply,
-            prepared.toolCalls,
-            model,
-            false,
-            {},
-            buildToolUsage(responsePromptTokens, prepared.toolCalls),
-            responsePromptTokens,
-            glmStats,
-            "raw",
-            toolRegistry,
-            {
-              ...rawDispatchContext,
-              rawSignature: prepared.signature,
-            },
-            thinkingRef.value,
-          );
-        }
+      const rawDispatch = tryDispatchRawToolCalls({
+        rawToolCalls: parseRawToolCalls(content, toolRegistry, {
+          allowProseEnvelope: false,
+        }),
+        reply,
+        model,
+        stream: false,
+        streamHeaders: {},
+        promptTokens: responsePromptTokens,
+        stats: glmStats,
+        toolRegistry,
+        rawDispatchContext,
+        lastRawDispatchSignature,
+        lastRawDispatchUser,
+        guardAndSendToolCalls: deps.guardAndSendToolCalls,
+        reasoningContent: thinkingRef.value,
+        requiredToolName: toolChoiceFunctionName,
+        confirmationScope,
+      });
+      if (rawDispatch) {
+        return rawDispatch;
       }
     }
     return deps.sendContent(reply, content, model, responsePromptTokens, glmStats);

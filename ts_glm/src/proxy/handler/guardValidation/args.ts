@@ -1,4 +1,4 @@
-import { normalizeJsonCandidate, parseRawJson } from "../../tools/parseJson.js";
+import { asPlainObject, normalizeJsonCandidate, selectJsonEnvelope } from "../../tools/parseJson.js";
 
 const truncateValue = (value: unknown, limit = 240): unknown => {
   if (typeof value !== "string") return value;
@@ -16,13 +16,42 @@ const summarizeArgs = (args: Record<string, unknown>): string => {
   }
 };
 
-const asPlainObject = (value: unknown): Record<string, unknown> | null => {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  return value as Record<string, unknown>;
+const normalizeToolName = (value: string) => value.toLowerCase().replace(/[_-]/g, "");
+
+const decodeCommonEscapes = (value: string): string => {
+  return value
+    .replace(/\\\\/g, "\\")
+    .replace(/\\"/g, "\"")
+    .replace(/\\n/g, "\n")
+    .replace(/\\r/g, "\r")
+    .replace(/\\t/g, "\t");
+};
+
+const tryRecoverWriteArgs = (rawArgs: string): Record<string, unknown> | null => {
+  const text = String(rawArgs || "").trim();
+  if (!text.startsWith("{")) return null;
+  const pathMatch = text.match(/"(filePath|file_path|path)"\s*:\s*"([^"]*)"/);
+  const contentKey = /"content"\s*:\s*"/g;
+  const contentMatch = contentKey.exec(text);
+  if (!pathMatch || !contentMatch) return null;
+  const valueStart = contentMatch.index + contentMatch[0].length;
+  const objectEnd = text.lastIndexOf("}");
+  if (objectEnd <= valueStart) return null;
+  const valueEnd = text.lastIndexOf("\"", objectEnd - 1);
+  if (valueEnd <= valueStart) return null;
+  const pathKey = pathMatch[1];
+  const pathValue = decodeCommonEscapes(pathMatch[2] || "");
+  const contentValue = decodeCommonEscapes(text.slice(valueStart, valueEnd));
+  if (!pathValue) return null;
+  return {
+    [pathKey]: pathValue,
+    content: contentValue,
+  };
 };
 
 const parseToolCallArguments = (
   rawArgs: unknown,
+  toolName?: string,
 ): { ok: true; args: Record<string, unknown>; rewritten: boolean } | { ok: false } => {
   if (rawArgs == null) return { ok: true, args: {}, rewritten: false };
   if (typeof rawArgs === "object") {
@@ -51,10 +80,31 @@ const parseToolCallArguments = (
     }
   }
 
-  const reparsed = parseRawJson(rawArgs);
-  const reparsedObj = asPlainObject(reparsed);
-  if (reparsedObj) {
-    return { ok: true, args: reparsedObj, rewritten: true };
+  const envelope = selectJsonEnvelope(rawArgs);
+  if (envelope && envelope.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(envelope);
+      const obj = asPlainObject(parsed);
+      if (obj) return { ok: true, args: obj, rewritten: true };
+    } catch {
+      const repaired = normalizeJsonCandidate(envelope);
+      if (repaired !== envelope) {
+        try {
+          const parsed = JSON.parse(repaired);
+          const obj = asPlainObject(parsed);
+          if (obj) return { ok: true, args: obj, rewritten: true };
+        } catch {
+          // continue
+        }
+      }
+    }
+  }
+  if (typeof rawArgs === "string") {
+    const normalized = normalizeToolName(String(toolName || ""));
+    if (normalized === "write" || normalized === "writefile") {
+      const recovered = tryRecoverWriteArgs(rawArgs);
+      if (recovered) return { ok: true, args: recovered, rewritten: true };
+    }
   }
   return { ok: false };
 };

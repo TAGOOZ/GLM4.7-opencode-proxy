@@ -44,9 +44,10 @@ const isNetworkToolName = (name: string): boolean => {
 
 const isNameMatch = (target: string, candidate: string) => {
   if (candidate === target) return true;
-  if (candidate.startsWith(target)) return true;
   if (candidate === `${target}file`) return true;
   if (candidate === `${target}dir`) return true;
+  if (target === `${candidate}file`) return true;
+  if (target === `${candidate}dir`) return true;
   return false;
 };
 

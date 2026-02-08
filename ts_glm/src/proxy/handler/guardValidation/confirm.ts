@@ -68,11 +68,7 @@ const buildConfirmationToolCall = (
 };
 
 const NON_CONFIRMABLE_GUARD_REASONS = new Set([
-  "invalid_tool_args",
   "unexpected_arg",
-  "missing_path",
-  "missing_command",
-  "missing_content",
   "invalid_content_type",
 ]);
 

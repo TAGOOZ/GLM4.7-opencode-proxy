@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import type { ToolInfo } from "./registry.js";
 
 const looksLikePath = (value: string | null): boolean => {
@@ -30,7 +31,7 @@ const stripOuterQuotes = (value: string): string => {
 };
 
 const extractKeyValueArgs = (raw: string): Record<string, string> | null => {
-  const matches = [...raw.matchAll(/([A-Za-z0-9_]+)=("([^"]*)"|'([^']*)'|`([^`]*)`|([^\\s]+))/g)];
+  const matches = [...raw.matchAll(/([A-Za-z0-9_]+)=("([^"]*)"|'([^']*)'|`([^`]*)`|([^\s]+))/g)];
   if (!matches.length) return null;
   const args: Record<string, string> = {};
   for (const match of matches) {
@@ -114,11 +115,21 @@ const extractFilePath = (text: string): string | null => {
   return pathToken || null;
 };
 
+const buildSingleToolCall = (toolName: string, args: Record<string, unknown>) => [
+  {
+    id: `call_${crypto.randomUUID().slice(0, 8)}`,
+    index: 0,
+    type: "function",
+    function: { name: toolName, arguments: JSON.stringify(args) },
+  },
+];
+
 export {
   extractDirPath,
   extractFilePath,
   extractKeyValueArgs,
   extractQuotedText,
+  buildSingleToolCall,
   looksLikePath,
   pickArgKey,
   shellEscape,

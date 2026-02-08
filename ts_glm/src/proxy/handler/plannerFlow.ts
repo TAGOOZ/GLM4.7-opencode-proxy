@@ -5,12 +5,11 @@ import {
 } from "../constants.js";
 import { estimateMessagesTokens } from "../context.js";
 import { openaiContentResponse } from "../openai.js";
-import { isRawToolCallsAllowed, validatePlannerActions } from "./guards.js";
+import { validatePlannerActions } from "./guards.js";
 import { inferListToolCall, inferReadToolCall, inferSearchToolCall } from "../tools/infer.js";
 import { findTool } from "../tools/registry.js";
 import { parseRawToolCalls } from "../tools/parse.js";
 import { buildInstructionMessages } from "./messageHelpers.js";
-import { prepareRawToolCalls } from "./rawToolCalls.js";
 import {
   applyResponseHeaders,
   buildToolUsage,
@@ -19,6 +18,7 @@ import {
   extractPlannerFinal,
 } from "./utils.js";
 import { parsePlannerOutput } from "./plannerParsing.js";
+import { tryDispatchRawToolCalls } from "./rawDispatchFlow.js";
 import {
   buildPlannerToolCalls,
   filterPlannerActionsWithPolicy,
@@ -46,6 +46,8 @@ export const createPlannerFlow = (deps: PlannerFlowDeps) => {
       explicitToolCalls,
       inferredToolCall,
       toolChoiceRequired,
+      toolChoiceFunctionName,
+      confirmationScope,
       tools,
       messages,
       sanitizedMessages,
@@ -90,10 +92,70 @@ export const createPlannerFlow = (deps: PlannerFlowDeps) => {
         glmStats,
         earlySource,
         toolRegistry,
+        undefined,
+        thinkingRef.value,
+        toolChoiceFunctionName,
+        confirmationScope,
       );
     }
 
     const activeChatId = await getChatId();
+    const dispatchRaw = (rawToolCalls: any[] | null) => {
+      return tryDispatchRawToolCalls({
+        rawToolCalls,
+        reply,
+        model,
+        stream,
+        streamHeaders,
+        promptTokens: responsePromptTokens,
+        stats: glmStats,
+        toolRegistry,
+        rawDispatchContext,
+        lastRawDispatchSignature,
+        lastRawDispatchUser,
+        guardAndSendToolCalls: deps.guardAndSendToolCalls,
+        reasoningContent: thinkingRef.value,
+        requiredToolName: toolChoiceFunctionName,
+        confirmationScope,
+      });
+    };
+    const dispatchHeuristicFallback = () => {
+      if (!allowHeuristicTools) return null;
+      const fallbackTools =
+        inferReadToolCall(toolRegistry, lastUser) ||
+        inferListToolCall(toolRegistry, lastUser) ||
+        inferSearchToolCall(toolRegistry, lastUser);
+      if (!fallbackTools) return null;
+      return deps.guardAndSendToolCalls(
+        reply,
+        fallbackTools,
+        model,
+        stream,
+        streamHeaders,
+        buildToolUsage(responsePromptTokens, fallbackTools),
+        responsePromptTokens,
+        glmStats,
+        "heuristic",
+        toolRegistry,
+        undefined,
+        thinkingRef.value,
+        toolChoiceFunctionName,
+        confirmationScope,
+      );
+    };
+    const sendFinalContent = (content: string, promptTokens: number, stats = glmStats) => {
+      if (stream) {
+        return deps.sendStreamContent(reply, content, model, stats, promptTokens, thinkingRef.value);
+      }
+      return deps.sendContent(reply, content, model, promptTokens, stats);
+    };
+    const requestInstructionFinal = async (instruction: string) => {
+      const finalPayload = buildInstructionMessages(deps.contextConfig, instruction, messages, []);
+      const finalText = await collectModelResponse(activeChatId, finalPayload.messages);
+      const finalPromptTokens = estimateMessagesTokens(finalPayload.messages);
+      const finalContent = extractPlannerFinal(finalText) ?? finalText;
+      return sendFinalContent(finalContent, finalPromptTokens, finalPayload.stats);
+    };
     let plannerParentMessageId: string | null | undefined = undefined;
     if (!useHistoryThisRequest) {
       // Planner retries can otherwise incur repeated getChat() calls via getCurrentMessageId().
@@ -112,37 +174,19 @@ export const createPlannerFlow = (deps: PlannerFlowDeps) => {
       const preview = responseText.length > 400 ? `${responseText.slice(0, 400)}...` : responseText;
       console.log("proxy_debug model_raw:", preview);
     }
-    const earlyRawToolCalls = parseRawToolCalls(responseText, toolRegistry);
-    if (earlyRawToolCalls && isRawToolCallsAllowed(earlyRawToolCalls)) {
-      const prepared = prepareRawToolCalls(earlyRawToolCalls, rawDispatchContext, toolRegistry, {
-        signature: lastRawDispatchSignature,
-        user: lastRawDispatchUser,
+    const parseRawToolCallsLenient = (text: string) => {
+      const strict = parseRawToolCalls(text, toolRegistry, {
+        allowProseEnvelope: false,
       });
-      if (!prepared) {
-        if (PROXY_DEBUG) {
-          console.log("proxy_debug raw_tool_calls_suppressed: true");
-        }
-      } else {
-        return deps.guardAndSendToolCalls(
-          reply,
-          prepared.toolCalls,
-          model,
-          stream,
-          streamHeaders,
-          buildToolUsage(responsePromptTokens, prepared.toolCalls),
-          responsePromptTokens,
-          glmStats,
-          "raw",
-          toolRegistry,
-          {
-            ...rawDispatchContext,
-            rawSignature: prepared.signature,
-          },
-          thinkingRef.value,
-        );
-      }
-    } else if (earlyRawToolCalls && PROXY_DEBUG) {
-      console.log("proxy_debug raw_tool_calls_blocked: true");
+      if (strict) return strict;
+      return parseRawToolCalls(text, toolRegistry, {
+        allowProseEnvelope: true,
+      });
+    };
+    const earlyRawToolCalls = parseRawToolCallsLenient(responseText);
+    const earlyRawDispatch = dispatchRaw(earlyRawToolCalls);
+    if (earlyRawDispatch) {
+      return earlyRawDispatch;
     }
 
     const parsedResult = await parsePlannerOutput({
@@ -159,40 +203,11 @@ export const createPlannerFlow = (deps: PlannerFlowDeps) => {
 
     const maybeRawToolCalls =
       (!parsed.ok || !parsed.data || (parsed.data.actions.length === 0 && responseText.trim().startsWith("[")))
-        ? parseRawToolCalls(responseText, toolRegistry)
+        ? parseRawToolCallsLenient(responseText)
         : null;
-    if (maybeRawToolCalls) {
-      if (isRawToolCallsAllowed(maybeRawToolCalls)) {
-        const prepared = prepareRawToolCalls(maybeRawToolCalls, rawDispatchContext, toolRegistry, {
-          signature: lastRawDispatchSignature,
-          user: lastRawDispatchUser,
-        });
-        if (prepared) {
-          return deps.guardAndSendToolCalls(
-            reply,
-            prepared.toolCalls,
-            model,
-            stream,
-            streamHeaders,
-            buildToolUsage(responsePromptTokens, prepared.toolCalls),
-            responsePromptTokens,
-            glmStats,
-            "raw",
-            toolRegistry,
-            {
-              ...rawDispatchContext,
-              rawSignature: prepared.signature,
-            },
-            thinkingRef.value,
-          );
-        }
-        if (PROXY_DEBUG) {
-          console.log("proxy_debug raw_tool_calls_suppressed: true");
-        }
-      }
-      if (PROXY_DEBUG) {
-        console.log("proxy_debug raw_tool_calls_blocked: true");
-      }
+    const maybeRawDispatch = dispatchRaw(maybeRawToolCalls);
+    if (maybeRawDispatch) {
+      return maybeRawDispatch;
     }
 
     if (!parsed.ok || !parsed.data) {
@@ -209,39 +224,10 @@ export const createPlannerFlow = (deps: PlannerFlowDeps) => {
     }
 
     if (!parsed.ok || !parsed.data) {
-      const rawToolCalls = parseRawToolCalls(responseText, toolRegistry);
-      if (rawToolCalls) {
-        if (isRawToolCallsAllowed(rawToolCalls)) {
-          const prepared = prepareRawToolCalls(rawToolCalls, rawDispatchContext, toolRegistry, {
-            signature: lastRawDispatchSignature,
-            user: lastRawDispatchUser,
-          });
-          if (prepared) {
-            return deps.guardAndSendToolCalls(
-              reply,
-              prepared.toolCalls,
-              model,
-              stream,
-              streamHeaders,
-              buildToolUsage(responsePromptTokens, prepared.toolCalls),
-              responsePromptTokens,
-              glmStats,
-              "raw",
-              toolRegistry,
-              {
-                ...rawDispatchContext,
-                rawSignature: prepared.signature,
-              },
-              thinkingRef.value,
-            );
-          }
-          if (PROXY_DEBUG) {
-            console.log("proxy_debug raw_tool_calls_suppressed: true");
-          }
-        }
-        if (PROXY_DEBUG) {
-          console.log("proxy_debug raw_tool_calls_blocked: true");
-        }
+      const rawToolCalls = parseRawToolCallsLenient(responseText);
+      const fallbackRawDispatch = dispatchRaw(rawToolCalls);
+      if (fallbackRawDispatch) {
+        return fallbackRawDispatch;
       }
       if (hasToolResult) {
         const looksLikePlannerJson =
@@ -252,74 +238,20 @@ export const createPlannerFlow = (deps: PlannerFlowDeps) => {
           const finalPromptTokens = estimateMessagesTokens(finalPayload.messages);
           const extractedFinal = extractPlannerFinal(finalText) ?? extractPlannerFinal(responseText);
           const finalContent = extractedFinal ?? finalText;
-          if (stream) {
-            return deps.sendStreamContent(
-              reply,
-              finalContent,
-              model,
-              finalPayload.stats,
-              finalPromptTokens,
-              thinkingRef.value,
-            );
-          }
-          return deps.sendContent(reply, finalContent, model, finalPromptTokens, finalPayload.stats);
+          return sendFinalContent(finalContent, finalPromptTokens, finalPayload.stats);
         }
       }
       if (hasToolResult && responseText.trim()) {
         const extractedFinal = extractPlannerFinal(responseText);
         const finalContent = extractedFinal ?? responseText;
-        if (stream) {
-          return deps.sendStreamContent(
-            reply,
-            finalContent,
-            model,
-            glmStats,
-            responsePromptTokens,
-            thinkingRef.value,
-          );
-        }
-        return deps.sendContent(reply, finalContent, model, responsePromptTokens, glmStats);
+        return sendFinalContent(finalContent, responsePromptTokens, glmStats);
       }
-      const fallbackTools = allowHeuristicTools
-        ? inferReadToolCall(toolRegistry, lastUser) ||
-          inferListToolCall(toolRegistry, lastUser) ||
-          inferSearchToolCall(toolRegistry, lastUser)
-        : null;
-      if (fallbackTools) {
-        return deps.guardAndSendToolCalls(
-          reply,
-          fallbackTools,
-          model,
-          stream,
-          streamHeaders,
-          buildToolUsage(responsePromptTokens, fallbackTools),
-          responsePromptTokens,
-          glmStats,
-          "heuristic",
-          toolRegistry,
-        );
-      }
+      const heuristicFallback = dispatchHeuristicFallback();
+      if (heuristicFallback) return heuristicFallback;
       if (!toolChoiceRequired) {
-        const finalPayload = buildInstructionMessages(
-          deps.contextConfig,
+        return requestInstructionFinal(
           "Answer the user directly. Return ONLY a JSON object matching the schema (actions empty, include final). No extra text or analysis.",
-          messages,
-          [],
         );
-        const finalText = await collectModelResponse(activeChatId, finalPayload.messages);
-        const finalPromptTokens = estimateMessagesTokens(finalPayload.messages);
-        const finalContent = extractPlannerFinal(finalText) ?? finalText;
-        if (stream) {
-          return deps.sendStreamContent(
-            reply,
-            finalContent,
-            model,
-            finalPayload.stats,
-            finalPromptTokens,
-            thinkingRef.value,
-          );
-        }
-        return deps.sendContent(reply, finalContent, model, finalPromptTokens, finalPayload.stats);
       }
       const fallback = openaiContentResponse(
         "Unable to generate tool call.",
@@ -360,26 +292,9 @@ export const createPlannerFlow = (deps: PlannerFlowDeps) => {
       if (PROXY_DEBUG) {
         console.log("proxy_debug tool_loop_limit: true");
       }
-      const finalPayload = buildInstructionMessages(
-        deps.contextConfig,
+      return requestInstructionFinal(
         "Tool loop limit reached. Use the tool results above to answer the user. Return ONLY a JSON object matching the schema (actions empty, include final). No extra text or analysis.",
-        messages,
-        [],
       );
-      const finalText = await collectModelResponse(activeChatId, finalPayload.messages);
-      const finalPromptTokens = estimateMessagesTokens(finalPayload.messages);
-      const finalContent = extractPlannerFinal(finalText) ?? finalText;
-      if (stream) {
-        return deps.sendStreamContent(
-          reply,
-          finalContent,
-          model,
-          finalPayload.stats,
-          finalPromptTokens,
-          thinkingRef.value,
-        );
-      }
-      return deps.sendContent(reply, finalContent, model, finalPromptTokens, finalPayload.stats);
     }
 
     if (parsedData.actions.length === 0) {
@@ -391,38 +306,11 @@ export const createPlannerFlow = (deps: PlannerFlowDeps) => {
         });
       }
       if (!hasToolResult) {
-        const fallbackTools = allowHeuristicTools
-          ? inferReadToolCall(toolRegistry, lastUser) ||
-            inferListToolCall(toolRegistry, lastUser) ||
-            inferSearchToolCall(toolRegistry, lastUser)
-          : null;
-        if (fallbackTools) {
-          return deps.guardAndSendToolCalls(
-            reply,
-            fallbackTools,
-            model,
-            stream,
-            streamHeaders,
-            buildToolUsage(responsePromptTokens, fallbackTools),
-            responsePromptTokens,
-            glmStats,
-            "heuristic",
-            toolRegistry,
-          );
-        }
+        const heuristicFallback = dispatchHeuristicFallback();
+        if (heuristicFallback) return heuristicFallback;
       }
       const content = parsedData.final || "";
-      if (stream) {
-        return deps.sendStreamContent(
-          reply,
-          content,
-          model,
-          glmStats,
-          responsePromptTokens,
-          thinkingRef.value,
-        );
-      }
-      return deps.sendContent(reply, content, model, responsePromptTokens, glmStats);
+      return sendFinalContent(content, responsePromptTokens, glmStats);
     }
 
     const invalid = parsedData.actions.find((action: any) => !findTool(toolRegistry, action.tool));
@@ -453,6 +341,8 @@ export const createPlannerFlow = (deps: PlannerFlowDeps) => {
       toolRegistry,
       undefined,
       thinkingRef.value,
+      toolChoiceFunctionName,
+      confirmationScope,
     );
   };
 

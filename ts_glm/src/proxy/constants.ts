@@ -18,17 +18,18 @@ export const PROXY_CONFIRM_DANGEROUS_COMMANDS = process.env.PROXY_CONFIRM_DANGER
 export const PROXY_TOOL_LOOP_LIMIT = Number(process.env.PROXY_TOOL_LOOP_LIMIT || "0");
 export const PROXY_INCLUDE_USAGE = process.env.PROXY_INCLUDE_USAGE !== "0";
 export const PROXY_PLANNER_MAX_RETRIES = Number(process.env.PROXY_PLANNER_MAX_RETRIES || "2");
-export const PROXY_MAX_ACTIONS_PER_TURN = Number(process.env.PROXY_MAX_ACTIONS_PER_TURN || "3");
+// <= 0 means unlimited actions per turn.
+export const PROXY_MAX_ACTIONS_PER_TURN = Number(process.env.PROXY_MAX_ACTIONS_PER_TURN || "0");
 export const PROXY_PLANNER_COERCE = process.env.PROXY_PLANNER_COERCE !== "0";
 // Reuse GLM-side chat history across requests (default: enabled). Disable with PROXY_USE_GLM_HISTORY=0.
 export const PROXY_USE_GLM_HISTORY = process.env.PROXY_USE_GLM_HISTORY !== "0";
-// Drop prior conversation turns from incoming messages (default: enabled).
-export const PROXY_STRIP_HISTORY = process.env.PROXY_STRIP_HISTORY !== "0";
+// Drop prior conversation turns from incoming messages (default: disabled). Enable with PROXY_STRIP_HISTORY=1.
+export const PROXY_STRIP_HISTORY = process.env.PROXY_STRIP_HISTORY === "1";
 export const PROXY_HISTORY_MAX_MESSAGES = Number(process.env.PROXY_HISTORY_MAX_MESSAGES || "0");
 export const PROXY_COMPACT_RESET = process.env.PROXY_COMPACT_RESET !== "0";
 export const PROXY_ALWAYS_SEND_SYSTEM = process.env.PROXY_ALWAYS_SEND_SYSTEM !== "0";
 export const PROXY_TEST_MODE = process.env.PROXY_TEST_MODE === "1";
-export const PROXY_ALLOW_USER_HEURISTICS = process.env.PROXY_ALLOW_USER_HEURISTICS === "1";
+export const PROXY_ALLOW_USER_HEURISTICS = process.env.PROXY_ALLOW_USER_HEURISTICS !== "0";
 
 // Prompt sizing controls. These significantly affect latency with OpenCode because tool schemas and
 // client system prompts can be very large.

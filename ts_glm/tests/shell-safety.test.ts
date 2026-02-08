@@ -24,3 +24,7 @@ test("proxy shell safety allows networked commands when explicitly enabled", () 
   assert.equal(isProxyShellCommandAllowed("git clone https://example.com/repo.git", true).ok, true);
 });
 
+test("proxy shell safety allows common local build commands", () => {
+  assert.equal(isProxyShellCommandAllowed("cargo build --release", false).ok, true);
+  assert.equal(isProxyShellCommandAllowed("pytest -q", false).ok, true);
+});

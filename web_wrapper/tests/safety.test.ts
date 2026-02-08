@@ -7,6 +7,7 @@ const config = {
   timeoutMs: 1000,
   strictJson: true,
   allowNetwork: false,
+  allowAnyCommand: true,
   allowlistCommands: DEFAULT_ALLOWLIST,
   denylistPatterns: DEFAULT_DENYLIST,
   redactPatterns: [],

@@ -4,6 +4,23 @@ import { tryParseModelOutput, tryRepairPlannerOutput } from "../tools/parse.js";
 
 type ParsedOutput = ReturnType<typeof tryParseModelOutput>;
 
+const parseWithRepair = (text: string): ParsedOutput => {
+  let parsed = tryParseModelOutput(text, false);
+  if (!parsed.ok) {
+    const repaired = tryRepairPlannerOutput(text);
+    if (repaired) {
+      parsed = { ok: true, data: repaired };
+    }
+  }
+  return parsed;
+};
+
+const logParseError = (parsed: ParsedOutput) => {
+  if (PROXY_DEBUG && !parsed.ok) {
+    console.log("proxy_debug json_parse_error:", parsed.error);
+  }
+};
+
 type ParsePlannerOutputParams = {
   activeChatId: string;
   glmMessages: { role: string; content: string }[];
@@ -36,16 +53,8 @@ export const parsePlannerOutput = async (
   let responseText = initialResponseText;
   let responsePromptTokens = initialPromptTokens;
 
-  let parsed = tryParseModelOutput(responseText, false);
-  if (!parsed.ok) {
-    const repaired = tryRepairPlannerOutput(responseText);
-    if (repaired) {
-      parsed = { ok: true, data: repaired };
-    }
-  }
-  if (PROXY_DEBUG && !parsed.ok) {
-    console.log("proxy_debug json_parse_error:", parsed.error);
-  }
+  let parsed = parseWithRepair(responseText);
+  logParseError(parsed);
   if (!parsed.ok && PROXY_PLANNER_MAX_RETRIES > 0) {
     // one retry with corrective message
     const corrective = {
@@ -61,16 +70,8 @@ export const parsePlannerOutput = async (
       const preview = responseText.length > 400 ? `${responseText.slice(0, 400)}...` : responseText;
       console.log("proxy_debug model_retry_raw:", preview);
     }
-    parsed = tryParseModelOutput(responseText, false);
-    if (!parsed.ok) {
-      const repaired = tryRepairPlannerOutput(responseText);
-      if (repaired) {
-        parsed = { ok: true, data: repaired };
-      }
-    }
-    if (PROXY_DEBUG && !parsed.ok) {
-      console.log("proxy_debug json_parse_error:", parsed.error);
-    }
+    parsed = parseWithRepair(responseText);
+    logParseError(parsed);
   }
 
   if (!parsed.ok && PROXY_PLANNER_MAX_RETRIES > 1) {
@@ -87,16 +88,8 @@ export const parsePlannerOutput = async (
       const preview = responseText.length > 400 ? `${responseText.slice(0, 400)}...` : responseText;
       console.log("proxy_debug model_retry2_raw:", preview);
     }
-    parsed = tryParseModelOutput(responseText, false);
-    if (!parsed.ok) {
-      const repaired = tryRepairPlannerOutput(responseText);
-      if (repaired) {
-        parsed = { ok: true, data: repaired };
-      }
-    }
-    if (PROXY_DEBUG && !parsed.ok) {
-      console.log("proxy_debug json_parse_error:", parsed.error);
-    }
+    parsed = parseWithRepair(responseText);
+    logParseError(parsed);
   }
 
   if (!parsed.ok) {

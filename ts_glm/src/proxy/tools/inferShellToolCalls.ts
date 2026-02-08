@@ -1,7 +1,7 @@
-import crypto from "crypto";
 import { DANGEROUS_COMMAND_PATTERNS, PROXY_DEBUG } from "../constants.js";
 import { findTool, normalizeArgsForTool, type ToolInfo } from "./registry.js";
 import {
+  buildSingleToolCall,
   extractFilePath,
   extractQuotedText,
   looksLikePath,
@@ -65,14 +65,7 @@ const inferSearchToolCall = (registry: Map<string, ToolInfo>, userText: string) 
   const key = pickArgKey(toolInfo, ["command", "cmd"]);
   const toolName = toolInfo.tool.function?.name || toolInfo.tool.name || "run_shell";
   const args = normalizeArgsForTool(toolInfo, { [key]: command });
-  return [
-    {
-      id: `call_${crypto.randomUUID().slice(0, 8)}`,
-      index: 0,
-      type: "function",
-      function: { name: toolName, arguments: JSON.stringify(args) },
-    },
-  ];
+  return buildSingleToolCall(toolName, args);
 };
 
 const inferDeleteCommand = (userText: string): string | null => {
@@ -141,15 +134,7 @@ const inferRunToolCall = (registry: Map<string, ToolInfo>, userText: string) => 
   const key = pickArgKey(toolInfo, ["command", "cmd"]);
   const toolName = toolInfo.tool.function?.name || toolInfo.tool.name || "run_shell";
   const args = normalizeArgsForTool(toolInfo, { [key]: inferred });
-  return [
-    {
-      id: `call_${crypto.randomUUID().slice(0, 8)}`,
-      index: 0,
-      type: "function",
-      function: { name: toolName, arguments: JSON.stringify(args) },
-    },
-  ];
+  return buildSingleToolCall(toolName, args);
 };
 
 export { inferRunToolCall, inferSearchToolCall };
-

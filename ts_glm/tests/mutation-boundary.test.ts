@@ -79,7 +79,7 @@ const runProxy = async (glmResponseText: string) => {
   return sent.payload;
 };
 
-test("planner multi-action with mutation returns only one tool call (confirmation boundary)", async () => {
+test("planner multi-action keeps non-mutating prep action before first mutation", async () => {
   const payload = await runProxy(
     JSON.stringify({
       plan: ["inspect then write"],
@@ -91,7 +91,9 @@ test("planner multi-action with mutation returns only one tool call (confirmatio
   );
   const toolCalls = payload?.choices?.[0]?.message?.tool_calls;
   assert.ok(Array.isArray(toolCalls));
-  assert.equal(toolCalls.length, 1);
+  assert.equal(toolCalls.length, 2);
+  assert.equal(toolCalls[0]?.function?.name, "read");
+  assert.equal(toolCalls[1]?.function?.name, "write");
 });
 
 test("planner multi-action without mutation remains unchanged", async () => {
@@ -109,3 +111,19 @@ test("planner multi-action without mutation remains unchanged", async () => {
   assert.equal(toolCalls.length, 2);
 });
 
+test("planner mutate-then-verify keeps first verification step", async () => {
+  const payload = await runProxy(
+    JSON.stringify({
+      plan: ["write then verify"],
+      actions: [
+        { tool: "write", args: { path: "notes.txt", content: "hi" } },
+        { tool: "read", args: { path: "notes.txt" } },
+      ],
+    }),
+  );
+  const toolCalls = payload?.choices?.[0]?.message?.tool_calls;
+  assert.ok(Array.isArray(toolCalls));
+  assert.equal(toolCalls.length, 2);
+  assert.equal(toolCalls[0]?.function?.name, "write");
+  assert.equal(toolCalls[1]?.function?.name, "read");
+});

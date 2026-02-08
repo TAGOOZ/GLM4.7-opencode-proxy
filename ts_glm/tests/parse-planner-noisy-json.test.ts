@@ -44,3 +44,30 @@ test("tryRepairPlannerOutput recovers JSON object when first extracted object is
   assert.equal(repaired?.actions.length, 1);
   assert.equal(repaired?.actions[0]?.args?.filePath, "snake_game/src/main.rs");
 });
+
+test("tryParseModelOutput relaxed mode prefers the latest valid JSON object", () => {
+  const raw = [
+    "{\"plan\":[\"old\"],\"actions\":[],\"final\":\"old\"}",
+    "Some non-JSON explanation in between.",
+    "{\"plan\":[\"new\"],\"actions\":[],\"final\":\"new\"}",
+  ].join("\n");
+
+  const parsed = tryParseModelOutput(raw, true);
+  assert.equal(parsed.ok, true);
+  if (!parsed.ok || !parsed.data) {
+    assert.fail("expected parsed planner output");
+  }
+  assert.equal(parsed.data.final, "new");
+});
+
+test("tryParseModelOutput recovers planner JSON after large non-JSON brace noise", () => {
+  const noisyPrefix = Array.from({ length: 3000 }, (_, i) => `noise_${i} {broken marker`).join("\n");
+  const raw = `${noisyPrefix}\n{"plan":["ok"],"actions":[],"final":"done"}`;
+
+  const parsed = tryParseModelOutput(raw, false);
+  assert.equal(parsed.ok, true);
+  if (!parsed.ok || !parsed.data) {
+    assert.fail("expected parsed planner output");
+  }
+  assert.equal(parsed.data.final, "done");
+});

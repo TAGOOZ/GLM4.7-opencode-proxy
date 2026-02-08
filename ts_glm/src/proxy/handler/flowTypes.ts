@@ -19,6 +19,8 @@ export type GuardAndSendToolCalls = (
   registry?: Map<string, ToolInfo>,
   rawContext?: RawDispatchContext & { rawSignature?: string },
   reasoningContent?: string,
+  requiredToolName?: string | null,
+  confirmationScope?: string,
 ) => unknown;
 
 type SendContent = (
@@ -68,6 +70,8 @@ export type PlannerFlowContext = {
   explicitToolCalls: any[] | null;
   inferredToolCall: any[] | null;
   toolChoiceRequired: boolean;
+  toolChoiceFunctionName: string | null;
+  confirmationScope: string;
   tools: any[];
   messages: any[];
   sanitizedMessages: any[];
@@ -88,38 +92,29 @@ export type PlannerFlowContext = {
   thinkingRef: { value: string };
 };
 
-export type StreamFallbackContext = {
+type FallbackContextBase = {
   reply: FastifyReply;
   model: string;
   tools: any[];
   glmMessages: { role: string; content: string }[];
   glmStats: ContextStats;
   responsePromptTokens: number;
-  streamHeaders: Record<string, string>;
   toolRegistry: Map<string, ToolInfo>;
   rawDispatchContext: RawDispatchContext;
   lastRawDispatchSignature: string;
   lastRawDispatchUser: string;
   collectModelResponse: (chatId: string, requestMessages: { role: string; content: string }[]) => Promise<string>;
   getChatId: () => Promise<string>;
+  thinkingRef: { value: string };
+  toolChoiceFunctionName: string | null;
+  confirmationScope: string;
+};
+
+export type StreamFallbackContext = FallbackContextBase & {
+  streamHeaders: Record<string, string>;
   useHistoryThisRequest: boolean;
   enableThinkingFinal: boolean;
   featureOverrides: Record<string, unknown>;
-  thinkingRef: { value: string };
 };
 
-export type NonStreamFallbackContext = {
-  reply: FastifyReply;
-  model: string;
-  tools: any[];
-  glmMessages: { role: string; content: string }[];
-  glmStats: ContextStats;
-  responsePromptTokens: number;
-  toolRegistry: Map<string, ToolInfo>;
-  rawDispatchContext: RawDispatchContext;
-  lastRawDispatchSignature: string;
-  lastRawDispatchUser: string;
-  collectModelResponse: (chatId: string, requestMessages: { role: string; content: string }[]) => Promise<string>;
-  getChatId: () => Promise<string>;
-  thinkingRef: { value: string };
-};
+export type NonStreamFallbackContext = FallbackContextBase;

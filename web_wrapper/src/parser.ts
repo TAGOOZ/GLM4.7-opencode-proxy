@@ -38,6 +38,9 @@ export const extractFirstJsonObject = (raw: string): { json?: string; error?: st
       }
       depth += 1;
     } else if (ch === "}") {
+      if (depth === 0) {
+        continue;
+      }
       depth -= 1;
       if (depth === 0 && start !== -1) {
         return { json: cleaned.slice(start, i + 1) };

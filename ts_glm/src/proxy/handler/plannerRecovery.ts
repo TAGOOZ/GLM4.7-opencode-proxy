@@ -1,20 +1,18 @@
-import crypto from "crypto";
 import type { ContextStats } from "../context.js";
 import { PROXY_DEBUG } from "../constants.js";
 import { estimateMessagesTokens } from "../context.js";
 import {
   applyMutationActionBoundary,
-  isRawToolCallsAllowed,
   validatePlannerActions,
 } from "./guards.js";
 import { filterPlannerActions } from "../tools/policy.js";
-import { findTool, normalizeArgsForTool } from "../tools/registry.js";
+import { findTool } from "../tools/registry.js";
 import { parseRawToolCalls, tryParseModelOutput, tryRepairPlannerOutput } from "../tools/parse.js";
-import { inferRecentFilePath } from "../tools/path.js";
 import { buildInstructionMessages } from "./messageHelpers.js";
-import { prepareRawToolCalls } from "./rawToolCalls.js";
 import { buildToolUsage, extractPlannerFinal } from "./utils.js";
 import type { PlannerFlowContext, PlannerFlowDeps } from "./flowTypes.js";
+import { tryDispatchRawToolCalls } from "./rawDispatchFlow.js";
+import { buildPlannerActionToolCall } from "./plannerActions.js";
 
 export const maybeRecoverEmptyActions = async (params: {
   deps: PlannerFlowDeps;
@@ -35,6 +33,8 @@ export const maybeRecoverEmptyActions = async (params: {
     tools,
     sanitizedMessages,
     allowTodoWrite,
+    toolChoiceFunctionName,
+    confirmationScope,
     collectModelResponse,
     thinkingRef,
   } = ctx;
@@ -50,30 +50,14 @@ export const maybeRecoverEmptyActions = async (params: {
     const invalidRecovery = filteredActions.find((action: any) => !findTool(toolRegistry, action?.tool || ""));
     if (invalidRecovery) return null;
     const boundedRecoveryActions = applyMutationActionBoundary(filteredActions as any, toolRegistry);
-    const recoveryToolCalls = boundedRecoveryActions.actions.map((action, idx) => {
-      const toolInfo = findTool(toolRegistry, action.tool);
-      const toolName = toolInfo?.tool.function?.name || toolInfo?.tool.name || action.tool;
-      let args = normalizeArgsForTool(toolInfo, action.args || {});
-      const normalizedTool = String(toolName || "").toLowerCase().replace(/[_-]/g, "");
-      const needsPath = normalizedTool === "read" || normalizedTool === "readfile";
-      const hasPath = args.path != null || (args as any).filePath != null || (args as any).file_path != null;
-      if (needsPath && !hasPath) {
-        const inferred = inferRecentFilePath(sanitizedMessages);
-        if (inferred) {
-          const key = toolInfo?.argKeys?.includes("filePath") ? "filePath" : "path";
-          args = { ...args, [key]: inferred };
-        }
-      }
-      return {
-        id: `call_${crypto.randomUUID().slice(0, 8)}`,
+    const recoveryToolCalls = boundedRecoveryActions.actions.map((action, idx) =>
+      buildPlannerActionToolCall({
+        action,
         index: idx,
-        type: "function",
-        function: {
-          name: toolName,
-          arguments: JSON.stringify(args),
-        },
-      };
-    });
+        toolRegistry,
+        sanitizedMessages,
+      }),
+    );
     return deps.guardAndSendToolCalls(
       reply,
       recoveryToolCalls,
@@ -87,6 +71,8 @@ export const maybeRecoverEmptyActions = async (params: {
       toolRegistry,
       undefined,
       thinkingRef.value,
+      toolChoiceFunctionName,
+      confirmationScope,
     );
   };
 
@@ -113,34 +99,28 @@ export const maybeRecoverEmptyActions = async (params: {
   const recoveryText = await collectModelResponse(activeChatId, recoveryPayload.messages);
   const recoveryPromptTokens = estimateMessagesTokens(recoveryPayload.messages);
 
-  const recoveryRawToolCalls = parseRawToolCalls(recoveryText, toolRegistry);
-  if (recoveryRawToolCalls && isRawToolCallsAllowed(recoveryRawToolCalls)) {
-    const prepared = prepareRawToolCalls(recoveryRawToolCalls, rawDispatchContext, toolRegistry, {
-      signature: lastRawDispatchSignature,
-      user: lastRawDispatchUser,
-    });
-    if (prepared) {
-      return deps.guardAndSendToolCalls(
-        reply,
-        prepared.toolCalls,
-        model,
-        stream,
-        streamHeaders,
-        buildToolUsage(recoveryPromptTokens, prepared.toolCalls),
-        recoveryPromptTokens,
-        recoveryPayload.stats,
-        "raw",
-        toolRegistry,
-        {
-          ...rawDispatchContext,
-          rawSignature: prepared.signature,
-        },
-        thinkingRef.value,
-      );
-    }
-    if (PROXY_DEBUG) {
-      console.log("proxy_debug raw_tool_calls_suppressed: true");
-    }
+  const recoveryRawDispatch = tryDispatchRawToolCalls({
+    rawToolCalls: parseRawToolCalls(recoveryText, toolRegistry, {
+      allowProseEnvelope: false,
+    }),
+    reply,
+    model,
+    stream,
+    streamHeaders,
+    promptTokens: recoveryPromptTokens,
+    stats: recoveryPayload.stats,
+    toolRegistry,
+    rawDispatchContext,
+    lastRawDispatchSignature,
+    lastRawDispatchUser,
+    guardAndSendToolCalls: deps.guardAndSendToolCalls,
+    reasoningContent: thinkingRef.value,
+    requiredToolName: toolChoiceFunctionName,
+    confirmationScope,
+    logBlocked: false,
+  });
+  if (recoveryRawDispatch) {
+    return recoveryRawDispatch;
   }
 
   let recovered = parseRecoveryPayload(recoveryText);

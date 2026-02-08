@@ -56,13 +56,7 @@ export const prepareRawToolCalls = (
     if (args && context.hasToolResult && context.recentFilePath) {
       const isPathRepairableTool =
         toolName === "read" ||
-        toolName === "readfile" ||
-        toolName === "write" ||
-        toolName === "writefile" ||
-        toolName === "edit" ||
-        toolName === "editfile" ||
-        toolName === "applypatch" ||
-        toolName === "patch";
+        toolName === "readfile";
       const hasPath =
         typeof args.path === "string" && args.path.trim().length > 0
           ? true

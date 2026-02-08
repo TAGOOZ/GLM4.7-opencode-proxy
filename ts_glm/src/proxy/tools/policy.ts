@@ -1,6 +1,7 @@
 import type { ToolLike } from "./registry.js";
 
-const TODO_INTENT_REGEX = /\b(todo|to-do|checklist|task list)\b/i;
+const TODO_INTENT_REGEX =
+  /\b(todo|to-do|checklist|task list|task tracker|track tasks?|manage tasks?|organize tasks?|progress checklist|action checklist)\b/i;
 const TODO_TOOL_NAMES = new Set(["todowrite", "todoread"]);
 
 const normalizeToolName = (value: unknown): string =>

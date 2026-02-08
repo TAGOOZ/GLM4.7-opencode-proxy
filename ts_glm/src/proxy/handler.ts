@@ -77,8 +77,18 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
       inferredToolCall,
       shouldAttemptTools,
       toolChoiceRequired,
+      toolChoiceFunctionName,
+      toolChoiceUnknownFunction,
+      confirmationScope,
       systemText,
     } = await prepareChatRequest(request, requestId);
+    if (toolChoiceUnknownFunction) {
+      const content = `Unknown tool in tool_choice: ${toolChoiceUnknownFunction}`;
+      if (stream) {
+        return sendStreamContent(reply, content, model);
+      }
+      return sendContent(reply, content, model, 0);
+    }
     let chatId: string | null = null;
     const getChatId = async () => {
       if (!chatId) {
@@ -105,7 +115,10 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
       "Runtime workspace context:",
       `- cwd: ${process.cwd()}`,
       "Path policy: use repo-relative paths for tool args whenever possible.",
-      "Never emit read/write/edit/apply_patch actions without an explicit file path.",
+      "Prefer explicit file paths for read/write/edit/apply_patch; if unknown, inspect with path '.' first.",
+      "For apply_patch/patch, include explicit target file headers when available (*** Update File: ... or diff --git ...).",
+      "Avoid absolute paths, ~, and ../ traversal in tool args.",
+      "Use the tool schema's exact path key (path/filePath/file_path).",
     ].join("\n");
     const plannerSystemText = [systemText, runtimeWorkspaceSystem].filter(Boolean).join("\n\n");
     const baseMessages = buildMessages(
@@ -265,6 +278,8 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
         explicitToolCalls,
         inferredToolCall,
         toolChoiceRequired,
+        toolChoiceFunctionName,
+        confirmationScope,
         tools,
         messages,
         sanitizedMessages,
@@ -301,6 +316,8 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
         enableThinkingFinal,
         featureOverrides,
         thinkingRef,
+        toolChoiceFunctionName,
+        confirmationScope,
       });
     }
 
@@ -318,6 +335,8 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
       collectModelResponse,
       getChatId,
       thinkingRef,
+      toolChoiceFunctionName,
+      confirmationScope,
     });
 
   };

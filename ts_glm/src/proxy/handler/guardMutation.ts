@@ -47,9 +47,12 @@ const RAW_TOOL_ALLOWLIST_NORM = new Set([...RAW_TOOL_ALLOWLIST].map((t) => norma
 export const isRawToolCallsAllowed = (calls: any[]): boolean => {
   return calls.every((call) => {
     const toolName = normalizeToolName(call?.function?.name || call?.name || "");
-    if (RAW_TOOL_ALLOWLIST_NORM.has(toolName)) return true;
-    if (PROXY_ALLOW_RAW_MUTATIONS && MUTATION_TOOLS_NORM.has(toolName)) return true;
-    return false;
+    if (!toolName) return false;
+    if (PROXY_ALLOW_RAW_MUTATIONS) return true;
+    if (MUTATION_TOOLS_NORM.has(toolName)) return false;
+    // Keep the legacy allowlist as a soft signal for debug/compat, but do not hard-block
+    // unknown non-mutation tool names at this early stage.
+    return true;
   });
 };
 
@@ -71,7 +74,17 @@ export const applyMutationActionBoundary = (
   registry: Map<string, ToolInfo>,
 ): { actions: { tool: string; args: Record<string, unknown> }[]; truncated: boolean } => {
   if (actions.length <= 1) return { actions, truncated: false };
-  const hasMutation = actions.some((action) => isMutationPlannerAction(action, registry));
-  if (!hasMutation) return { actions, truncated: false };
-  return { actions: actions.slice(0, 1), truncated: true };
+  const bounded: { tool: string; args: Record<string, unknown> }[] = [];
+  let mutationCount = 0;
+  for (const action of actions) {
+    const isMutation = isMutationPlannerAction(action, registry);
+    if (isMutation) {
+      mutationCount += 1;
+      if (mutationCount > 1) {
+        return { actions: bounded, truncated: true };
+      }
+    }
+    bounded.push(action);
+  }
+  return { actions: bounded, truncated: false };
 };

@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
   isSensitivePath,
   isUnsafePathInput,
@@ -33,10 +36,38 @@ test("isUnsafePathInput allows in-workspace absolute paths when enabled", () => 
   );
 });
 
+test("isUnsafePathInput rejects symlink escapes from workspace roots", () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "ts-glm-path-safety-"));
+  const root = path.join(base, "root");
+  const outside = path.join(base, "outside");
+  const link = path.join(root, "link");
+  fs.mkdirSync(root, { recursive: true });
+  fs.mkdirSync(outside, { recursive: true });
+  fs.writeFileSync(path.join(outside, "secret.txt"), "secret");
+  try {
+    fs.symlinkSync(outside, link, "dir");
+  } catch {
+    fs.rmSync(base, { recursive: true, force: true });
+    return;
+  }
+  try {
+    const escaped = path.join(link, "secret.txt");
+    assert.equal(normalizePathForWorkspace(escaped, [root]), escaped);
+    assert.equal(
+      isUnsafePathInput(escaped, { allowAbsoluteInWorkspace: true, workspaceRoots: [root] }),
+      true,
+    );
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
 test("isSensitivePath avoids substring false positives like monkey/hockey", () => {
   assert.equal(isSensitivePath("src/monkey.ts"), false);
   assert.equal(isSensitivePath("src/hockey.js"), false);
   assert.equal(isSensitivePath("src/keyboard.ts"), false);
+  assert.equal(isSensitivePath("src/api_keys.ts"), false);
+  assert.equal(isSensitivePath("src/credentials.ts"), false);
 });
 
 test("isSensitivePath allows common example env files", () => {

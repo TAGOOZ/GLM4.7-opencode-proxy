@@ -1,6 +1,5 @@
-import crypto from "crypto";
 import { findTool, normalizeArgsForTool, type ToolInfo } from "./registry.js";
-import { pickArgKey } from "./inferUtils.js";
+import { buildSingleToolCall, pickArgKey } from "./inferUtils.js";
 
 const extractPatchBlock = (text: string): string | null => {
   const fenced = text.match(/```(?:diff|patch)?\n([\s\S]+?)```/i);
@@ -18,36 +17,80 @@ const extractPatchBlock = (text: string): string | null => {
   return null;
 };
 
+const extractSingleTargetPath = (patch: string): string | null => {
+  const paths: string[] = [];
+  const addPath = (value: string | undefined) => {
+    const trimmed = String(value || "").trim();
+    if (!trimmed) return;
+    paths.push(trimmed);
+  };
+
+  for (const match of patch.matchAll(/^\s*\*\*\*\s+Update File:\s*(.+)$/gm)) addPath(match[1]);
+  if (!paths.length) {
+    for (const match of patch.matchAll(/^\s*diff --git a\/.+ b\/(.+)$/gm)) addPath(match[1]);
+  }
+  if (!paths.length) {
+    for (const match of patch.matchAll(/^\s*\+\+\+\s+b\/(.+)$/gm)) addPath(match[1]);
+  }
+
+  const unique = [...new Set(paths)];
+  if (unique.length !== 1) return null;
+  return unique[0];
+};
+
 const parsePatchForEdit = (patch: string): { filePath: string; oldString: string; newString: string } | null => {
-  const fileMatch =
-    patch.match(/^\s*\*\*\*\s+Update File:\s*(.+)$/m) ||
-    patch.match(/^\s*\+\+\+\s+b\/(.+)$/m) ||
-    patch.match(/^\s*diff --git a\/.+ b\/(.+)$/m);
-  if (!fileMatch) return null;
-  const filePath = fileMatch[1]?.trim();
+  const filePath = extractSingleTargetPath(patch);
   if (!filePath) return null;
+
   const lines = patch.split(/\r?\n/);
   let inHunk = false;
+  let hunkCount = 0;
+  let hasChange = false;
   const oldLines: string[] = [];
   const newLines: string[] = [];
+
   for (const line of lines) {
-    const trimmed = line.trimStart();
-    if (trimmed.startsWith("@@")) {
+    if (line.startsWith("@@")) {
+      hunkCount += 1;
+      if (hunkCount > 1) return null;
       inHunk = true;
       continue;
     }
+
     if (!inHunk) continue;
-    if (trimmed.startsWith("*** End Patch")) break;
-    if (trimmed.startsWith("---") || trimmed.startsWith("+++")) continue;
-    if (trimmed.startsWith("-")) {
-      oldLines.push(trimmed.slice(1));
+
+    if (
+      line.startsWith("*** End Patch") ||
+      line.startsWith("*** Update File:") ||
+      line.startsWith("*** Add File:") ||
+      line.startsWith("*** Delete File:") ||
+      line.startsWith("diff --git ")
+    ) {
+      break;
+    }
+    if (line.startsWith("\\ No newline at end of file")) continue;
+    if (line.startsWith("---") || line.startsWith("+++")) continue;
+
+    const marker = line.slice(0, 1);
+    const content = line.slice(1);
+    if (marker === "-") {
+      hasChange = true;
+      oldLines.push(content);
       continue;
     }
-    if (trimmed.startsWith("+")) {
-      newLines.push(trimmed.slice(1));
+    if (marker === "+") {
+      hasChange = true;
+      newLines.push(content);
+      continue;
+    }
+    if (marker === " ") {
+      oldLines.push(content);
+      newLines.push(content);
       continue;
     }
   }
+
+  if (hunkCount !== 1 || !hasChange) return null;
   if (!oldLines.length || !newLines.length) return null;
   return { filePath, oldString: oldLines.join("\n"), newString: newLines.join("\n") };
 };
@@ -59,14 +102,7 @@ const inferApplyPatchToolCall = (registry: Map<string, ToolInfo>, userText: stri
   if (!toolInfo) return null;
   const key = pickArgKey(toolInfo, ["patch", "input", "diff", "changes"]);
   const toolName = toolInfo.tool.function?.name || toolInfo.tool.name || "apply_patch";
-  return [
-    {
-      id: `call_${crypto.randomUUID().slice(0, 8)}`,
-      index: 0,
-      type: "function",
-      function: { name: toolName, arguments: JSON.stringify({ [key]: patch }) },
-    },
-  ];
+  return buildSingleToolCall(toolName, { [key]: patch });
 };
 
 const inferEditToolCall = (registry: Map<string, ToolInfo>, userText: string) => {
@@ -82,15 +118,7 @@ const inferEditToolCall = (registry: Map<string, ToolInfo>, userText: string) =>
     oldString: parsed.oldString,
     newString: parsed.newString,
   };
-  return [
-    {
-      id: `call_${crypto.randomUUID().slice(0, 8)}`,
-      index: 0,
-      type: "function",
-      function: { name: toolName, arguments: JSON.stringify(normalizeArgsForTool(toolInfo, args)) },
-    },
-  ];
+  return buildSingleToolCall(toolName, normalizeArgsForTool(toolInfo, args));
 };
 
 export { inferApplyPatchToolCall, inferEditToolCall };
-

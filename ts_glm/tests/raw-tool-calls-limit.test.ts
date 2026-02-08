@@ -67,7 +67,7 @@ const runProxy = async (glmResponseText: string) => {
   return sent.payload;
 };
 
-test("raw tool_calls array exceeding PROXY_MAX_ACTIONS_PER_TURN is truncated", async () => {
+test("raw tool_calls array is not truncated by default action cap", async () => {
   const payload = await runProxy(
     JSON.stringify([
       { name: "read", arguments: { path: "README.md" } },
@@ -79,7 +79,7 @@ test("raw tool_calls array exceeding PROXY_MAX_ACTIONS_PER_TURN is truncated", a
 
   const toolCalls = payload?.choices?.[0]?.message?.tool_calls;
   assert.ok(Array.isArray(toolCalls));
-  assert.equal(toolCalls.length, 3);
+  assert.equal(toolCalls.length, 4);
   assert.equal(toolCalls[0]?.function?.name, "read");
 });
 
@@ -98,7 +98,7 @@ test("raw tool_calls array within limit is allowed", async () => {
   assert.equal(toolCalls[0]?.function?.name, "read");
 });
 
-test("planner actions exceeding PROXY_MAX_ACTIONS_PER_TURN are truncated", async () => {
+test("planner actions are not truncated by default action cap", async () => {
   const payload = await runProxy(
     JSON.stringify({
       plan: ["read a few files"],
@@ -113,6 +113,6 @@ test("planner actions exceeding PROXY_MAX_ACTIONS_PER_TURN are truncated", async
 
   const toolCalls = payload?.choices?.[0]?.message?.tool_calls;
   assert.ok(Array.isArray(toolCalls));
-  assert.equal(toolCalls.length, 3);
+  assert.equal(toolCalls.length, 4);
   assert.equal(toolCalls[0]?.function?.name, "read");
 });

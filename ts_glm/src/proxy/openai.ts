@@ -16,11 +16,21 @@ const sanitizeNonStreamToolCalls = (toolCalls: any[]) => {
   });
 };
 
-const openaiToolResponse = (toolCalls: any[], model: string, usage?: Record<string, number>) => ({
+const createCompletionBase = (model: string) => ({
   id: `chatcmpl-${crypto.randomUUID().slice(0, 8)}`,
   object: "chat.completion",
   created: Math.floor(Date.now() / 1000),
   model,
+});
+
+const createStreamMeta = (model: string) => ({
+  id: `chatcmpl-${crypto.randomUUID().slice(0, 8)}`,
+  created: Math.floor(Date.now() / 1000),
+  model,
+});
+
+const openaiToolResponse = (toolCalls: any[], model: string, usage?: Record<string, number>) => ({
+  ...createCompletionBase(model),
   choices: [
     {
       index: 0,
@@ -32,10 +42,7 @@ const openaiToolResponse = (toolCalls: any[], model: string, usage?: Record<stri
 });
 
 const openaiContentResponse = (content: string, model: string, usage?: Record<string, number>) => ({
-  id: `chatcmpl-${crypto.randomUUID().slice(0, 8)}`,
-  object: "chat.completion",
-  created: Math.floor(Date.now() / 1000),
-  model,
+  ...createCompletionBase(model),
   choices: [
     {
       index: 0,
@@ -46,93 +53,96 @@ const openaiContentResponse = (content: string, model: string, usage?: Record<st
   ...(usage ? { usage } : {}),
 });
 
+const appendReasoningChunk = (
+  chunks: string[],
+  meta: { id: string; created: number; model: string },
+  reasoningContent?: string,
+) => {
+  const trimmedReasoning = String(reasoningContent || "").trim();
+  if (!trimmedReasoning) return;
+  chunks.push(
+    `data: ${JSON.stringify({
+      id: meta.id,
+      object: "chat.completion.chunk",
+      created: meta.created,
+      model: meta.model,
+      choices: [{ index: 0, delta: { reasoning_content: trimmedReasoning }, finish_reason: null }],
+    })}\n\n`,
+  );
+};
+
+const appendFinalStreamChunk = (
+  chunks: string[],
+  meta: { id: string; created: number; model: string },
+  finishReason: "stop" | "tool_calls",
+  usage?: Record<string, number>,
+) => {
+  const finalChunk: Record<string, unknown> = {
+    id: meta.id,
+    object: "chat.completion.chunk",
+    created: meta.created,
+    model: meta.model,
+    choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
+  };
+  if (usage) {
+    finalChunk.usage = usage;
+  }
+  chunks.push(`data: ${JSON.stringify(finalChunk)}\n\n`);
+  chunks.push("data: [DONE]\n\n");
+};
+
+const streamAssistantDelta = (params: {
+  model: string;
+  delta: Record<string, unknown>;
+  finishReason: "stop" | "tool_calls";
+  usage?: Record<string, number>;
+  reasoningContent?: string;
+}) => {
+  const { model, delta, finishReason, usage, reasoningContent } = params;
+  const meta = createStreamMeta(model);
+  const chunks: string[] = [];
+  appendReasoningChunk(chunks, meta, reasoningContent);
+  chunks.push(
+    `data: ${JSON.stringify({
+      id: meta.id,
+      object: "chat.completion.chunk",
+      created: meta.created,
+      model: meta.model,
+      choices: [{ index: 0, delta, finish_reason: null }],
+    })}\n\n`,
+  );
+  appendFinalStreamChunk(chunks, meta, finishReason, usage);
+  return chunks.join("");
+};
+
 const streamContent = (
   content: string,
   model: string,
   usage?: Record<string, number>,
   reasoningContent?: string,
-) => {
-  const id = `chatcmpl-${crypto.randomUUID().slice(0, 8)}`;
-  const created = Math.floor(Date.now() / 1000);
-  const finalChunk: Record<string, unknown> = {
-    id,
-    object: "chat.completion.chunk",
-    created,
+) =>
+  streamAssistantDelta({
     model,
-    choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-  };
-  if (usage) {
-    finalChunk.usage = usage;
-  }
-  const chunks: string[] = [];
-  const trimmedReasoning = String(reasoningContent || "").trim();
-  if (trimmedReasoning) {
-    chunks.push(
-      `data: ${JSON.stringify({
-        id,
-        object: "chat.completion.chunk",
-        created,
-        model,
-        choices: [{ index: 0, delta: { reasoning_content: trimmedReasoning }, finish_reason: null }],
-      })}\n\n`,
-    );
-  }
-  chunks.push(
-    `data: ${JSON.stringify({
-      id,
-      object: "chat.completion.chunk",
-      created,
-      model,
-      choices: [{ index: 0, delta: { role: "assistant", content }, finish_reason: null }],
-    })}\n\n`,
-  );
-  chunks.push(`data: ${JSON.stringify(finalChunk)}\n\n`);
-  chunks.push("data: [DONE]\n\n");
-  return chunks.join("");
-};
+    delta: { role: "assistant", content },
+    finishReason: "stop",
+    usage,
+    reasoningContent,
+  });
 
 const streamToolCalls = (
   toolCalls: any[],
   model: string,
   usage?: Record<string, number>,
   reasoningContent?: string,
-) => {
-  const id = `chatcmpl-${crypto.randomUUID().slice(0, 8)}`;
-  const created = Math.floor(Date.now() / 1000);
-  const chunks: string[] = [];
-  const trimmedReasoning = String(reasoningContent || "").trim();
-  if (trimmedReasoning) {
-    chunks.push(
-      `data: ${JSON.stringify({
-        id,
-        object: "chat.completion.chunk",
-        created,
-        model,
-        choices: [{ index: 0, delta: { reasoning_content: trimmedReasoning }, finish_reason: null }],
-      })}\n\n`,
-    );
-  }
-  const firstChunk: Record<string, unknown> = {
-    id,
-    object: "chat.completion.chunk",
-    created,
-    model,
-    choices: [{ index: 0, delta: { role: "assistant", tool_calls: toolCalls }, finish_reason: null }],
-  };
-  const finalChunk: Record<string, unknown> = {
-    id,
-    object: "chat.completion.chunk",
-    created,
-    model,
-    choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
-  };
+) =>
   // Usage on streamed tool_calls isn't consistently supported; keep it in the final chunk only.
-  if (usage) finalChunk.usage = usage;
-  chunks.push(`data: ${JSON.stringify(firstChunk)}\n\n`);
-  chunks.push(`data: ${JSON.stringify(finalChunk)}\n\n`);
-  chunks.push("data: [DONE]\n\n");
-  return chunks.join("");
-};
+  streamAssistantDelta({
+    model,
+    delta: { role: "assistant", tool_calls: toolCalls },
+    finishReason: "tool_calls",
+    usage,
+    reasoningContent,
+  });
 
 const sendToolCalls = (
   reply: FastifyReply,

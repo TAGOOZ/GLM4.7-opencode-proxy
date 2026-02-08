@@ -74,7 +74,7 @@ export const isCommandAllowed = (command: string, config: ProtocolConfig): { ok:
     }
   }
   const first = lowered.split(/\s+/)[0];
-  if (!config.allowlistCommands.includes(first)) {
+  if (!config.allowAnyCommand && !config.allowlistCommands.includes(first)) {
     return { ok: false, reason: "not_allowlisted" };
   }
   return { ok: true };

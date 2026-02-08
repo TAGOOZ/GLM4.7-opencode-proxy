@@ -36,6 +36,7 @@ const makeReply = () => {
 test("policy drops todo tools and actions unless user explicitly asks for checklist/todo", () => {
   assert.equal(shouldAllowTodoTools("build snake game"), false);
   assert.equal(shouldAllowTodoTools("create a todo checklist for this task"), true);
+  assert.equal(shouldAllowTodoTools("track tasks for this project"), true);
 
   const tools = [
     { function: { name: "todowrite" } },

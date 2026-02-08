@@ -1,7 +1,6 @@
-import crypto from "crypto";
 import { findTool, normalizeArgsForTool, type ToolInfo } from "./registry.js";
 import { parseRawJson } from "./parse.js";
-import { extractKeyValueArgs, pickArgKey } from "./inferUtils.js";
+import { buildSingleToolCall, extractKeyValueArgs, pickArgKey } from "./inferUtils.js";
 
 const inferExplicitToolCalls = (registry: Map<string, ToolInfo>, userText: string) => {
   const lines = userText.split(/\r?\n/);
@@ -41,15 +40,10 @@ const inferExplicitToolCalls = (registry: Map<string, ToolInfo>, userText: strin
     }
     args = normalizeArgsForTool(toolInfo, args);
     const toolName = toolInfo.tool.function?.name || toolInfo.tool.name || rawName;
-    toolCalls.push({
-      id: `call_${crypto.randomUUID().slice(0, 8)}`,
-      index: toolCalls.length,
-      type: "function",
-      function: { name: toolName, arguments: JSON.stringify(args) },
-    });
+    const [call] = buildSingleToolCall(toolName, args);
+    toolCalls.push({ ...call, index: toolCalls.length });
   }
   return toolCalls.length ? toolCalls : null;
 };
 
 export { inferExplicitToolCalls };
-

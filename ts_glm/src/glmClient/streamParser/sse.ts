@@ -4,13 +4,21 @@ const parseSseLines = (
   options?: { flush?: boolean },
 ): { dataLines: string[]; rest: string } => {
   const dataLines: string[] = [];
-  let start = 0;
+  let cursor = 0;
+  const delimiter = /(?:\r?\n){2}/g;
 
-  const recordLine = (line: string) => {
-    if (!line.startsWith("data:")) return;
-    let dataStr = line.slice(5);
-    if (dataStr.startsWith(" ")) dataStr = dataStr.slice(1);
-    dataStr = dataStr.trim();
+  const recordEvent = (eventBlock: string) => {
+    const dataParts: string[] = [];
+    const lines = eventBlock.split(/\r?\n/);
+    for (const line of lines) {
+      if (!line.startsWith("data:")) continue;
+      let dataStr = line.slice(5);
+      if (dataStr.startsWith(" ")) dataStr = dataStr.slice(1);
+      dataParts.push(dataStr);
+    }
+    if (!dataParts.length) return;
+    const dataStr = dataParts.join("\n").trim();
+    if (!dataStr) return;
     if (debugStream) {
       const snippet = dataStr.length > 500 ? `${dataStr.slice(0, 500)}...` : dataStr;
       console.error(`[glm_debug] raw: ${snippet}`);
@@ -19,17 +27,18 @@ const parseSseLines = (
   };
 
   while (true) {
-    const nl = buffer.indexOf("\n", start);
-    if (nl === -1) break;
-    let line = buffer.slice(start, nl);
-    if (line.endsWith("\r")) line = line.slice(0, -1);
-    start = nl + 1;
-    recordLine(line);
+    delimiter.lastIndex = cursor;
+    const match = delimiter.exec(buffer);
+    if (!match) break;
+    const eventEnd = match.index;
+    const eventBlock = buffer.slice(cursor, eventEnd);
+    cursor = eventEnd + match[0].length;
+    recordEvent(eventBlock);
   }
 
-  let rest = buffer.slice(start);
+  let rest = buffer.slice(cursor);
   if (options?.flush && rest) {
-    recordLine(rest.trimEnd());
+    recordEvent(rest.trimEnd());
     rest = "";
   }
 

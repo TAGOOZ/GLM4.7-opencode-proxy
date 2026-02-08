@@ -54,6 +54,7 @@ export type ProtocolConfig = {
   timeoutMs: number;
   strictJson: boolean;
   allowNetwork: boolean;
+  allowAnyCommand: boolean;
   logPath?: string;
   redactPatterns: RegExp[];
   allowlistCommands: string[];

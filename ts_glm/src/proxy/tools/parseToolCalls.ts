@@ -1,16 +1,23 @@
 import crypto from "crypto";
 import { findTool, normalizeArgsForTool, type ToolInfo } from "./registry.js";
 import {
+  asPlainObject,
   extractJsonBlock,
   findStringEnd,
   normalizeJsonCandidate,
   parseRawJson,
+  selectJsonEnvelope,
 } from "./parseJson.js";
 
-const asPlainObject = (value: unknown): Record<string, unknown> | null => {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  return value as Record<string, unknown>;
-};
+const createFunctionToolCall = (toolName: string, serializedArgs: string, index: number) => ({
+  id: `call_${crypto.randomUUID().slice(0, 8)}`,
+  index,
+  type: "function",
+  function: {
+    name: toolName,
+    arguments: serializedArgs,
+  },
+});
 
 const parseArgsBlock = (block: string | null): Record<string, unknown> | null => {
   if (!block) return null;
@@ -29,7 +36,17 @@ const parseArgsString = (raw: string): Record<string, unknown> | null => {
   const trimmed = String(raw || "").trim();
   if (!trimmed) return {};
 
-  const direct = parseArgsBlock(trimmed);
+  const parseStrictObjectCandidate = (candidate: string): Record<string, unknown> | null => {
+    const normalizedCandidate = String(candidate || "").trim();
+    if (!normalizedCandidate) return {};
+    const direct = parseArgsBlock(normalizedCandidate);
+    if (direct) return direct;
+    const envelope = selectJsonEnvelope(normalizedCandidate);
+    if (!envelope || !envelope.startsWith("{")) return null;
+    return parseArgsBlock(envelope);
+  };
+
+  const direct = parseStrictObjectCandidate(trimmed);
   if (direct) return direct;
 
   try {
@@ -37,21 +54,11 @@ const parseArgsString = (raw: string): Record<string, unknown> | null => {
     const obj = asPlainObject(decoded);
     if (obj) return obj;
     if (typeof decoded === "string") {
-      const nested = parseArgsBlock(decoded);
+      const nested = parseStrictObjectCandidate(decoded);
       if (nested) return nested;
     }
   } catch {
     // ignore
-  }
-
-  const reparsed = parseRawJson(trimmed);
-  const reparsedObj = asPlainObject(reparsed);
-  if (reparsedObj) return reparsedObj;
-
-  const objectBlock = extractJsonBlock(trimmed, "{", "}");
-  if (objectBlock) {
-    const blockParsed = parseArgsBlock(objectBlock);
-    if (blockParsed) return blockParsed;
   }
   return null;
 };
@@ -122,27 +129,61 @@ const parseToolCallsFromText = (raw: string, registry: Map<string, ToolInfo>) =>
       cursor = braceIdx + block.length;
       continue;
     }
+    if (!/"arguments"\s*:/.test(block)) {
+      cursor = braceIdx + block.length;
+      continue;
+    }
     const args = extractArgumentsFromFunctionText(block);
     const normalizedArgs = normalizeArgsForTool(toolInfo, args);
     const toolName = toolInfo.tool.function?.name || toolInfo.tool.name || rawName;
-    toolCalls.push({
-      id: `call_${crypto.randomUUID().slice(0, 8)}`,
-      index: toolCalls.length,
-      type: "function",
-      function: {
-        name: toolName,
-        arguments: JSON.stringify(normalizedArgs),
-      },
-    });
+    toolCalls.push(createFunctionToolCall(toolName, JSON.stringify(normalizedArgs), toolCalls.length));
     cursor = braceIdx + block.length;
   }
   return toolCalls.length ? toolCalls : null;
 };
 
-const parseRawToolCalls = (raw: string, registry: Map<string, ToolInfo>) => {
-  const data = parseRawJson(raw);
+const hasOwn = (value: unknown, key: string): boolean =>
+  Boolean(value) && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, key);
+
+const isToolCallCandidate = (value: unknown): boolean => {
+  const obj = asPlainObject(value);
+  if (!obj) return false;
+  const func = asPlainObject(obj.function);
+  if (func && typeof func.name === "string") {
+    if (hasOwn(func, "arguments")) return true;
+    return typeof obj.type === "string" || hasOwn(obj, "id");
+  }
+  if (typeof obj.tool === "string") return hasOwn(obj, "arguments");
+  if (typeof obj.name === "string") return hasOwn(obj, "arguments");
+  return false;
+};
+
+const stringifyUnknown = (value: unknown): string => {
+  try {
+    const serialized = JSON.stringify(value);
+    if (typeof serialized === "string") return serialized;
+  } catch {
+    // ignore
+  }
+  return String(value);
+};
+
+type ParseRawToolCallsOptions = {
+  allowProseEnvelope?: boolean;
+};
+
+const parseRawToolCalls = (
+  raw: string,
+  registry: Map<string, ToolInfo>,
+  options?: ParseRawToolCallsOptions,
+) => {
+  const allowProseEnvelope = options?.allowProseEnvelope ?? true;
+  const envelope = selectJsonEnvelope(raw, { allowProse: allowProseEnvelope });
+  if (!envelope) return null;
+
+  const data = parseRawJson(envelope);
   if (!data) {
-    return parseToolCallsFromText(raw, registry);
+    return parseToolCallsFromText(envelope, registry);
   }
   let calls: any[] = [];
   if (Array.isArray(data)) {
@@ -151,7 +192,7 @@ const parseRawToolCalls = (raw: string, registry: Map<string, ToolInfo>) => {
     calls = data.tool_calls;
   } else if (data.tool && data.arguments !== undefined) {
     calls = [{ tool: data.tool, arguments: data.arguments }];
-  } else if (data.function || data.name) {
+  } else if (isToolCallCandidate(data)) {
     calls = [data];
   } else {
     return null;
@@ -159,12 +200,21 @@ const parseRawToolCalls = (raw: string, registry: Map<string, ToolInfo>) => {
 
   const toolCalls = [];
   for (const call of calls) {
-    const func = call.function || call;
-    const rawName = func?.name || call.name || call.tool;
+    if (!isToolCallCandidate(call)) continue;
+    const callObj = asPlainObject(call);
+    if (!callObj) continue;
+    const func = asPlainObject(callObj.function);
+    const rawName =
+      (func && typeof func.name === "string" ? func.name : "") ||
+      (typeof callObj.name === "string" ? callObj.name : "") ||
+      (typeof callObj.tool === "string" ? callObj.tool : "");
     if (!rawName) continue;
     const toolInfo = findTool(registry, rawName);
     if (!toolInfo) continue;
-    const rawArgs = func?.arguments ?? call.arguments ?? {};
+    const hasFunctionArgs = hasOwn(func, "arguments");
+    const hasCallArgs = hasOwn(callObj, "arguments");
+    const hasExplicitArgs = hasFunctionArgs || hasCallArgs;
+    const rawArgs = hasFunctionArgs ? (func as any).arguments : hasCallArgs ? (callObj as any).arguments : {};
     let serializedArgs = "{}";
     if (typeof rawArgs === "string") {
       const parsedArgs = parseArgsString(rawArgs);
@@ -179,17 +229,12 @@ const parseRawToolCalls = (raw: string, registry: Map<string, ToolInfo>) => {
     } else if (asPlainObject(rawArgs)) {
       const normalizedArgs = normalizeArgsForTool(toolInfo, rawArgs as Record<string, unknown>);
       serializedArgs = JSON.stringify(normalizedArgs);
+    } else if (hasExplicitArgs) {
+      // Preserve non-object primitive/array arguments so guard validation can reject explicitly.
+      serializedArgs = stringifyUnknown(rawArgs);
     }
     const toolName = toolInfo.tool.function?.name || toolInfo.tool.name || rawName;
-    toolCalls.push({
-      id: `call_${crypto.randomUUID().slice(0, 8)}`,
-      index: toolCalls.length,
-      type: "function",
-      function: {
-        name: toolName,
-        arguments: serializedArgs,
-      },
-    });
+    toolCalls.push(createFunctionToolCall(toolName, serializedArgs, toolCalls.length));
   }
   return toolCalls.length ? toolCalls : null;
 };

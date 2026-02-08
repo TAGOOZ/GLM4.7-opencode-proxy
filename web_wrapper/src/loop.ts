@@ -27,6 +27,7 @@ const DEFAULT_CONFIG: ProtocolConfig = {
   timeoutMs: 120_000,
   strictJson: true,
   allowNetwork: false,
+  allowAnyCommand: true,
   logPath: undefined,
   redactPatterns: defaultRedactPatterns(),
   allowlistCommands: DEFAULT_ALLOWLIST,

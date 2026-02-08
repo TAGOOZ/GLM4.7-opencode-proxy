@@ -161,3 +161,25 @@ test("raw mode suppresses duplicate consecutive calls in one batch", async () =>
   assert.equal(toolCalls[0]?.function?.name, "read");
   assert.equal(toolCalls[1]?.function?.name, "read");
 });
+
+test("raw mode keeps custom non-mutation tools instead of early allowlist drop", async () => {
+  const tools = [
+    {
+      function: {
+        name: "inspect",
+        parameters: { properties: { target: { type: "string" } } },
+      },
+    },
+  ] as any[];
+
+  const payload = await runProxy(
+    JSON.stringify([{ name: "inspect", arguments: { target: "README.md" } }]),
+    "inspect it",
+    tools,
+  );
+
+  const toolCalls = payload?.choices?.[0]?.message?.tool_calls;
+  assert.ok(Array.isArray(toolCalls));
+  assert.equal(toolCalls.length, 1);
+  assert.equal(toolCalls[0]?.function?.name, "inspect");
+});

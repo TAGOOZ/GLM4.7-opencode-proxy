@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import { getClient } from "../utils.js";
+import { getClient, writeStreamChunks } from "../utils.js";
 
 export const registerInteractiveCommand = (program: Command) => {
   program
@@ -21,17 +21,12 @@ export const registerInteractiveCommand = (program: Command) => {
         if (!input.trim()) return true;
         if (input.trim() === "/quit") return false;
         const messages = [{ role: "user", content: input }];
-        for await (const chunk of client.sendMessage({
-          chatId: chatId!,
-          messages,
-        })) {
-          if (chunk.type === "content") {
-            process.stdout.write(chunk.data);
-          } else if (chunk.type === "error") {
-            process.stderr.write(`\nError: ${chunk.data}\n`);
-          }
-        }
-        process.stdout.write("\n");
+        await writeStreamChunks(
+          client.sendMessage({
+            chatId: chatId!,
+            messages,
+          }),
+        );
         return true;
       };
 

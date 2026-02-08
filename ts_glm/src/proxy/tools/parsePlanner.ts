@@ -5,7 +5,6 @@ import {
   validateModelOutput,
   type ModelOutput,
 } from "web-wrapper-protocol";
-
 const coercePlannerData = (data: any): ModelOutput => {
   const plan = Array.isArray(data?.plan)
     ? data.plan.map((p: any) => String(p))
@@ -54,48 +53,53 @@ const extractLikelyJsonObjects = (raw: string): string[] => {
     out.push(trimmed);
   };
 
-  for (let i = 0; i < text.length; i += 1) {
-    if (text[i] !== "{") continue;
-
-    let probe = i + 1;
+  const startsLikeJsonObject = (index: number): boolean => {
+    let probe = index + 1;
     while (probe < text.length && /\s/.test(text[probe])) probe += 1;
-    if (probe >= text.length) continue;
+    if (probe >= text.length) return false;
     const next = text[probe];
-    // Heuristic: a valid JSON object should begin with a quoted key or be empty.
-    if (next !== "\"" && next !== "}") continue;
+    return next === "\"" || next === "}";
+  };
 
-    let depth = 0;
-    let inString = false;
-    let escaped = false;
-    let end = -1;
-    for (let j = i; j < text.length; j += 1) {
-      const ch = text[j];
-      if (inString) {
-        if (escaped) {
-          escaped = false;
-        } else if (ch === "\\") {
-          escaped = true;
-        } else if (ch === "\"") {
-          inString = false;
-        }
-        continue;
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === "\"") {
+        inString = false;
       }
-      if (ch === "\"") {
-        inString = true;
-        continue;
-      }
-      if (ch === "{") {
-        depth += 1;
-      } else if (ch === "}") {
-        depth -= 1;
-        if (depth === 0) {
-          end = j;
-          break;
-        }
-      }
+      continue;
     }
-    if (end !== -1) {
-      pushCandidate(text.slice(i, end + 1));
+
+    if (ch === "\"") {
+      inString = true;
+      continue;
+    }
+
+    if (ch === "{") {
+      if (depth === 0) {
+        if (!startsLikeJsonObject(i)) continue;
+        start = i;
+      }
+      if (start !== -1) depth += 1;
+      continue;
+    }
+
+    if (ch === "}") {
+      if (depth === 0) continue;
+      depth -= 1;
+      if (depth === 0 && start !== -1) {
+        pushCandidate(text.slice(start, i + 1));
+        start = -1;
+      }
     }
   }
   return out;
@@ -138,32 +142,34 @@ const tryRepairPlannerOutput = (raw: string): ModelOutput | null => {
 };
 
 const tryParseModelOutput = (raw: string, allowRelaxed: boolean) => {
-  let parsed = parseModelOutput(raw, true);
-  if (!parsed.ok && allowRelaxed) {
-    const relaxed = parseModelOutput(raw, false);
-    if (relaxed.ok) {
-      parsed = relaxed;
-    }
-  }
-  if (!parsed.ok) {
-    const candidates = extractLikelyJsonObjects(raw);
-    for (let i = candidates.length - 1; i >= 0; i -= 1) {
-      let candidateResult = parseModelOutput(candidates[i], true);
-      if (!candidateResult.ok && allowRelaxed) {
-        const relaxed = parseModelOutput(candidates[i], false);
-        if (relaxed.ok) {
-          candidateResult = relaxed;
-        }
-      }
-      if (candidateResult.ok) return candidateResult;
+  const strictResult = parseModelOutput(raw, true);
+  if (strictResult.ok) return strictResult;
 
-      const repaired = parseCandidateAsModelOutput(candidates[i]);
-      if (repaired) {
-        return { ok: true, data: repaired };
-      }
+  const candidates = extractLikelyJsonObjects(raw);
+  for (let i = candidates.length - 1; i >= 0; i -= 1) {
+    const candidate = candidates[i];
+    const strictCandidate = parseModelOutput(candidate, true);
+    if (strictCandidate.ok) return strictCandidate;
+
+    if (allowRelaxed) {
+      const relaxedCandidate = parseModelOutput(candidate, false);
+      if (relaxedCandidate.ok) return relaxedCandidate;
+    }
+
+    const repaired = parseCandidateAsModelOutput(candidate);
+    if (repaired) {
+      return { ok: true, data: repaired };
     }
   }
-  return parsed;
+
+  if (allowRelaxed) {
+    const relaxedResult = parseModelOutput(raw, false);
+    if (relaxedResult.ok) {
+      return relaxedResult;
+    }
+  }
+
+  return strictResult;
 };
 
 export { tryParseModelOutput, tryRepairPlannerOutput };

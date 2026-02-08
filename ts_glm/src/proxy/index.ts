@@ -40,7 +40,7 @@ const handleChatCompletion = createChatCompletionHandler({ client, ensureChat, r
 
 app.get("/", async () => ({ status: "ok", message: "GLM proxy is running" }));
 
-app.get("/v1/models", async () => ({
+const listModels = async () => ({
   object: "list",
   data: [
     {
@@ -50,19 +50,10 @@ app.get("/v1/models", async () => ({
       owned_by: "z.ai",
     },
   ],
-}));
+});
 
-app.get("/models", async () => ({
-  object: "list",
-  data: [
-    {
-      id: DEFAULT_MODEL,
-      object: "model",
-      created: Math.floor(Date.now() / 1000),
-      owned_by: "z.ai",
-    },
-  ],
-}));
+app.get("/v1/models", listModels);
+app.get("/models", listModels);
 
 app.post("/v1/chat/completions", handleChatCompletion);
 app.post("/chat/completions", handleChatCompletion);

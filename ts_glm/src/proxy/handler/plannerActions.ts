@@ -12,21 +12,16 @@ export const limitPlannerActions = (parsedData: any) => {
     Array.isArray(parsedData.actions) &&
     parsedData.actions.length > PROXY_MAX_ACTIONS_PER_TURN
   ) {
-    const originalCount = parsedData.actions.length;
-    const trimmed = {
-      ...parsedData,
-      actions: parsedData.actions.slice(0, PROXY_MAX_ACTIONS_PER_TURN),
-    };
     if (PROXY_DEBUG) {
       console.log(
-        "proxy_debug too_many_actions: truncated_planner_actions",
+        "proxy_debug too_many_actions: planner_actions_over_limit",
         JSON.stringify({
-          originalCount,
-          returnedCount: trimmed.actions.length,
+          originalCount: parsedData.actions.length,
+          configuredMax: PROXY_MAX_ACTIONS_PER_TURN,
         }),
       );
     }
-    return trimmed;
+    return parsedData;
   }
   return parsedData;
 };
@@ -55,18 +50,30 @@ export const filterPlannerActionsWithPolicy = (
     if (!keep) filteredNoOpCount += 1;
     return keep;
   });
-  if ((filteredTodoCount > 0 || filteredNoOpCount > 0) && PROXY_DEBUG) {
+  let droppedDuplicateActions = 0;
+  const seen = new Set<string>();
+  const deduped = filtered.filter((action: any) => {
+    const key = `${String(action?.tool || "")}|${JSON.stringify(action?.args || {})}`;
+    if (seen.has(key)) {
+      droppedDuplicateActions += 1;
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+  if ((filteredTodoCount > 0 || filteredNoOpCount > 0 || droppedDuplicateActions > 0) && PROXY_DEBUG) {
     console.log(
       "proxy_debug planner_actions_filtered:",
       JSON.stringify({
         originalCount: beforePolicy,
-        filteredCount: filtered.length,
+        filteredCount: deduped.length,
         droppedTodoActions: filteredTodoCount,
         droppedNoOpEdits: filteredNoOpCount,
+        droppedDuplicateActions,
       }),
     );
   }
-  return filtered;
+  return deduped;
 };
 
 export const buildPlannerToolCalls = (params: {
@@ -87,33 +94,52 @@ export const buildPlannerToolCalls = (params: {
     );
   }
 
-  const toolCalls = boundedActions.actions.map((action, idx) => {
-    const toolInfo = findTool(toolRegistry, action.tool);
-    const toolName = toolInfo?.tool.function?.name || toolInfo?.tool.name || action.tool;
-    let args = normalizeArgsForTool(toolInfo, action.args || {});
-
-    // Repair common planner mistakes: missing path/filePath on read tools.
-    // Never infer a target path for mutation tools (no heuristic mutations).
-    const normalizedTool = String(toolName || "").toLowerCase().replace(/[_-]/g, "");
-    const needsPath = normalizedTool === "read" || normalizedTool === "readfile";
-    const hasPath = args.path != null || (args as any).filePath != null || (args as any).file_path != null;
-    if (needsPath && !hasPath) {
-      const inferred = inferRecentFilePath(sanitizedMessages);
-      if (inferred) {
-        const key = toolInfo?.argKeys?.includes("filePath") ? "filePath" : "path";
-        args = { ...args, [key]: inferred };
-      }
-    }
-    return {
-      id: `call_${crypto.randomUUID().slice(0, 8)}`,
+  const toolCalls = boundedActions.actions.map((action, idx) =>
+    buildPlannerActionToolCall({
+      action,
       index: idx,
-      type: "function",
-      function: {
-        name: toolName,
-        arguments: JSON.stringify(args),
-      },
-    };
-  });
+      toolRegistry,
+      sanitizedMessages,
+    }),
+  );
 
   return { toolCalls };
+};
+
+export const buildPlannerActionToolCall = (params: {
+  action: any;
+  index: number;
+  toolRegistry: Map<string, ToolInfo>;
+  sanitizedMessages: any[];
+}) => {
+  const { action, index, toolRegistry, sanitizedMessages } = params;
+  const toolInfo = findTool(toolRegistry, action.tool);
+  const toolName = toolInfo?.tool.function?.name || toolInfo?.tool.name || action.tool;
+  let args = normalizeArgsForTool(toolInfo, action.args || {});
+
+  // Repair common planner mistakes: missing path/filePath on read tools.
+  // Never infer a target path for mutation tools (no heuristic mutations).
+  const normalizedTool = String(toolName || "").toLowerCase().replace(/[_-]/g, "");
+  const needsPath = normalizedTool === "read" || normalizedTool === "readfile";
+  const hasPath = args.path != null || (args as any).filePath != null || (args as any).file_path != null;
+  if (needsPath && !hasPath) {
+    const inferred = inferRecentFilePath(sanitizedMessages);
+    if (inferred) {
+      const key = toolInfo?.argKeys?.includes("filePath")
+        ? "filePath"
+        : toolInfo?.argKeys?.includes("file_path")
+          ? "file_path"
+          : "path";
+      args = { ...args, [key]: inferred };
+    }
+  }
+  return {
+    id: `call_${crypto.randomUUID().slice(0, 8)}`,
+    index,
+    type: "function",
+    function: {
+      name: toolName,
+      arguments: JSON.stringify(args),
+    },
+  };
 };

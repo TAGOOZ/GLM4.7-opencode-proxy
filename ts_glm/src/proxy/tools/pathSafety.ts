@@ -1,6 +1,62 @@
+import fs from "fs";
 import path from "path";
 
 const SAFE_ENV_SUFFIXES = new Set(["example", "sample", "template", "dist"]);
+const LIKELY_SOURCE_EXTENSIONS = new Set([
+  "ts",
+  "tsx",
+  "js",
+  "jsx",
+  "mjs",
+  "cjs",
+  "py",
+  "rb",
+  "php",
+  "java",
+  "kt",
+  "go",
+  "rs",
+  "c",
+  "cc",
+  "cpp",
+  "h",
+  "hpp",
+  "cs",
+  "swift",
+  "scala",
+  "sh",
+  "bash",
+  "zsh",
+  "fish",
+  "sql",
+  "md",
+]);
+
+const isPathWithinRoot = (candidate: string, root: string): boolean => {
+  const rel = path.relative(root, candidate);
+  return rel === "" || (!rel.startsWith(`..${path.sep}`) && rel !== ".." && !path.isAbsolute(rel));
+};
+
+const tryRealpath = (input: string): string | null => {
+  try {
+    if (typeof (fs.realpathSync as typeof fs.realpathSync & { native?: (value: string) => string }).native === "function") {
+      return path.resolve((fs.realpathSync as typeof fs.realpathSync & { native: (value: string) => string }).native(input));
+    }
+    return path.resolve(fs.realpathSync(input));
+  } catch {
+    return null;
+  }
+};
+
+const canonicalizeForContainment = (input: string): string => {
+  const resolved = path.resolve(input);
+  const direct = tryRealpath(resolved);
+  if (direct) return direct;
+  const parent = path.dirname(resolved);
+  const parentCanonical = tryRealpath(parent);
+  if (!parentCanonical) return resolved;
+  return path.join(parentCanonical, path.basename(resolved));
+};
 
 const isAbsolutePathLike = (input: string): boolean => {
   const trimmed = input.trim();
@@ -19,7 +75,10 @@ const getWorkspaceRoots = (): string[] => {
     .map((v) => v.trim())
     .filter(Boolean);
   const fromEnv = [process.env.INIT_CWD, process.cwd()].filter(Boolean) as string[];
-  const roots = [...configured, ...fromEnv].map((root) => path.resolve(root));
+  const roots = [...configured, ...fromEnv].map((root) => {
+    const resolved = path.resolve(root);
+    return tryRealpath(resolved) || resolved;
+  });
   return [...new Set(roots)];
 };
 
@@ -29,9 +88,14 @@ const normalizePathForWorkspace = (input: string, workspaceRoots: string[] = get
   if (!isAbsolutePathLike(trimmed)) return trimmed;
   if (!path.isAbsolute(trimmed)) return trimmed;
   const resolved = path.resolve(trimmed);
+  const canonicalResolved = canonicalizeForContainment(resolved);
   for (const root of workspaceRoots) {
-    const rel = path.relative(root, resolved);
-    if (rel === "" || (!rel.startsWith(`..${path.sep}`) && rel !== ".." && !path.isAbsolute(rel))) {
+    const resolvedRoot = path.resolve(root);
+    const canonicalRoot = canonicalizeForContainment(resolvedRoot);
+    if (!isPathWithinRoot(canonicalResolved, canonicalRoot)) continue;
+    if (!isPathWithinRoot(resolved, resolvedRoot)) continue;
+    const rel = path.relative(resolvedRoot, resolved);
+    if (isPathWithinRoot(resolved, resolvedRoot)) {
       return rel || ".";
     }
   }
@@ -63,6 +127,8 @@ const isSensitivePath = (value: string): boolean => {
   const normalized = value.replace(/\\/g, "/").toLowerCase();
   const parts = normalized.split("/").filter(Boolean);
   const base = parts.length ? parts[parts.length - 1] : normalized;
+  const extMatch = base.match(/\.([a-z0-9]{1,12})$/i);
+  const extension = extMatch?.[1]?.toLowerCase() || "";
 
   if (parts.includes(".ssh")) return true;
   if (parts.includes(".git")) return true;
@@ -78,6 +144,9 @@ const isSensitivePath = (value: string): boolean => {
   if (base === ".netrc") return true;
 
   if (base === "id_rsa" || base === "id_ed25519") return true;
+
+  // Avoid over-blocking source files whose names include "key"/"credentials".
+  if (extension && LIKELY_SOURCE_EXTENSIONS.has(extension)) return false;
 
   // "creds*" is a high-signal secret filename prefix; avoid false positives like "credit*".
   if (/^creds/i.test(base)) return true;

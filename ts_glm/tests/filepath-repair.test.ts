@@ -91,7 +91,7 @@ test("planner read without path is repaired from recent conversation", async () 
   assert.equal(args.path, "calculator/calculator.py");
 });
 
-test("planner write without path is blocked", async () => {
+test("planner write without path triggers confirmation flow", async () => {
   const payload = await runProxy(
     JSON.stringify({
       plan: ["write a quick note"],
@@ -103,12 +103,12 @@ test("planner write without path is blocked", async () => {
     ],
   );
 
-  const content = payload?.choices?.[0]?.message?.content || "";
-  assert.equal(typeof content, "string");
-  assert.equal(String(content).includes("Blocked unsafe tool call (missing_path)."), true);
+  const toolCalls = payload?.choices?.[0]?.message?.tool_calls;
+  assert.ok(Array.isArray(toolCalls));
+  assert.equal(toolCalls[0]?.function?.name, "question");
 });
 
-test("raw write without path is repaired from recent file context after tool result", async () => {
+test("raw write without path triggers confirmation flow instead of inferred repair", async () => {
   const payload = await runProxy(
     JSON.stringify([
       {
@@ -124,9 +124,28 @@ test("raw write without path is repaired from recent file context after tool res
   );
   const toolCalls = payload?.choices?.[0]?.message?.tool_calls;
   assert.ok(Array.isArray(toolCalls));
-  assert.equal(toolCalls.length, 1);
-  assert.equal(toolCalls[0]?.function?.name, "write");
-  const args = JSON.parse(toolCalls[0]?.function?.arguments || "{}");
-  assert.equal(args.path, "snake_game/src/main.rs");
-  assert.equal(typeof args.content, "string");
+  assert.equal(toolCalls[0]?.function?.name, "question");
+});
+
+test("planner read repair uses file_path when tool schema requires it", async () => {
+  const { buildPlannerActionToolCall } = await import("../src/proxy/handler/plannerActions.js");
+  const { buildToolRegistry } = await import("../src/proxy/tools/registry.js");
+  const registry = buildToolRegistry([
+    {
+      function: {
+        name: "read",
+        parameters: { properties: { file_path: { type: "string" } } },
+      },
+    },
+  ]);
+
+  const call = buildPlannerActionToolCall({
+    action: { tool: "read", args: {} },
+    index: 0,
+    toolRegistry: registry,
+    sanitizedMessages: [{ role: "assistant", content: "Read src/main.ts to continue." }],
+  });
+  const args = JSON.parse(String(call.function.arguments || "{}"));
+  assert.equal(args.file_path, "src/main.ts");
+  assert.equal("path" in args, false);
 });

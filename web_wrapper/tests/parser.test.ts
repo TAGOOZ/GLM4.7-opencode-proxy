@@ -27,4 +27,20 @@ describe("parser", () => {
     const res = parseModelOutput(raw, true);
     expect(res.ok).toBe(false);
   });
+
+  it("repairs trailing comma without mutating comment-like literals in strings", () => {
+    const raw = "{\"plan\":[],\"actions\":[],\"final\":\"keep /* literal */ and // text\",}";
+    const res = parseModelOutput(raw, false);
+    expect(res.ok).toBe(true);
+    if (!res.ok || !res.data) {
+      throw new Error("expected parsed output");
+    }
+    expect(res.data.final).toBe("keep /* literal */ and // text");
+  });
+
+  it("extracts valid JSON after an unmatched leading close brace", () => {
+    const raw = "} {\"plan\":[],\"actions\":[],\"final\":\"ok\"}";
+    const res = parseModelOutput(raw, false);
+    expect(res.ok).toBe(true);
+  });
 });
