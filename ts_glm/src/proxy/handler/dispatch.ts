@@ -1,7 +1,7 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import crypto from "node:crypto";
 import { DEFAULT_MODEL, PROXY_DEBUG } from "../constants.js";
-import { debugDump, truncate } from "../debug.js";
+import { debugDump, traceSync, truncate } from "../debug.js";
 import { openaiContentResponse, sendToolCalls, streamContent } from "../openai.js";
 import { validateToolCalls } from "./guards.js";
 import { applyResponseHeaders, buildToolUsage, isAffirmativeConfirmation } from "./utils.js";
@@ -111,7 +111,15 @@ export const createToolDispatch = (deps: { rawDispatchState: RawDispatchState })
       }
       return sendContent(reply, content, model, promptTokens, stats);
     }
-    const guard = validateToolCalls(toolCalls, source, registry, requiredToolName);
+    const guard = traceSync(
+      "guard_validate_tool_calls",
+      () => validateToolCalls(toolCalls, source, registry, requiredToolName),
+      {
+        source,
+        toolCallCount: Array.isArray(toolCalls) ? toolCalls.length : 0,
+        requiredToolName: requiredToolName || null,
+      },
+    );
     if (!guard.ok) {
       debugDump("guard_block", {
         source,

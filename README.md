@@ -218,12 +218,14 @@ Key proxy env vars and defaults:
 | `PROXY_CONFIRM_DANGEROUS_COMMANDS` | `1` | Require confirmation for dangerous commands |
 | `PROXY_MAX_ACTIONS_PER_TURN` | `0` | Max actions per turn (`<=0` = unlimited) |
 | `PROXY_TOOL_LOOP_LIMIT` | `0` | Max tool loop rounds (`<=0` = unlimited) |
-| `PROXY_PLANNER_MAX_RETRIES` | `2` | Planner parse retry attempts |
+| `PROXY_PLANNER_MAX_RETRIES` | `1` | Planner parse retry attempts |
 | `PROXY_PLANNER_COERCE` | `1` | Coerce planner failures into direct final answer |
 | `PROXY_ALLOW_USER_HEURISTICS` | `1` | Enable fallback heuristic tool inference |
 | `PROXY_USE_GLM_HISTORY` | `1` | Reuse GLM-side history across requests |
 | `PROXY_STRIP_HISTORY` | `0` | Strip prior history from incoming messages |
 | `PROXY_DEFAULT_THINKING` | `1` | Enable thinking by default |
+| `PROXY_TOOL_PROMPT_SCHEMA_MAX_CHARS` | `500` | Max schema chars included per tool when schema inclusion is enabled |
+| `PROXY_TOOL_PROMPT_EXTRA_SYSTEM_MAX_CHARS` | `500` | Max chars from extra system instructions merged into tool prompt |
 | `PROXY_WORKSPACE_ROOT` | unset | Optional workspace roots for path containment |
 
 Context sizing vars also exist (`PROXY_CONTEXT_*`) in `ts_glm/src/proxy/constants.ts`.

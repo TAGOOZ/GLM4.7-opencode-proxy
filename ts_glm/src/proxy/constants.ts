@@ -17,7 +17,8 @@ export const PROXY_CONFIRM_DANGEROUS_COMMANDS = process.env.PROXY_CONFIRM_DANGER
 // <= 0 means unlimited tool loops.
 export const PROXY_TOOL_LOOP_LIMIT = Number(process.env.PROXY_TOOL_LOOP_LIMIT || "0");
 export const PROXY_INCLUDE_USAGE = process.env.PROXY_INCLUDE_USAGE !== "0";
-export const PROXY_PLANNER_MAX_RETRIES = Number(process.env.PROXY_PLANNER_MAX_RETRIES || "2");
+// Default to one retry to limit extra GLM round-trips while preserving basic recovery.
+export const PROXY_PLANNER_MAX_RETRIES = Number(process.env.PROXY_PLANNER_MAX_RETRIES || "1");
 // <= 0 means unlimited actions per turn.
 export const PROXY_MAX_ACTIONS_PER_TURN = Number(process.env.PROXY_MAX_ACTIONS_PER_TURN || "0");
 export const PROXY_PLANNER_COERCE = process.env.PROXY_PLANNER_COERCE !== "0";
@@ -34,8 +35,8 @@ export const PROXY_ALLOW_USER_HEURISTICS = process.env.PROXY_ALLOW_USER_HEURISTI
 // Prompt sizing controls. These significantly affect latency with OpenCode because tool schemas and
 // client system prompts can be very large.
 export const PROXY_TOOL_PROMPT_INCLUDE_SCHEMA = process.env.PROXY_TOOL_PROMPT_INCLUDE_SCHEMA === "1";
-export const PROXY_TOOL_PROMPT_SCHEMA_MAX_CHARS = Number(process.env.PROXY_TOOL_PROMPT_SCHEMA_MAX_CHARS || "800");
-export const PROXY_TOOL_PROMPT_EXTRA_SYSTEM_MAX_CHARS = Number(process.env.PROXY_TOOL_PROMPT_EXTRA_SYSTEM_MAX_CHARS || "800");
+export const PROXY_TOOL_PROMPT_SCHEMA_MAX_CHARS = Number(process.env.PROXY_TOOL_PROMPT_SCHEMA_MAX_CHARS || "500");
+export const PROXY_TOOL_PROMPT_EXTRA_SYSTEM_MAX_CHARS = Number(process.env.PROXY_TOOL_PROMPT_EXTRA_SYSTEM_MAX_CHARS || "500");
 
 // Some GLM endpoints can be much slower with thinking enabled. Default is enabled unless you set this to 0.
 export const PROXY_DEFAULT_THINKING = process.env.PROXY_DEFAULT_THINKING !== "0";

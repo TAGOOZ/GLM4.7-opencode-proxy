@@ -44,6 +44,27 @@ export PROXY_LOG_FILE=/tmp/proxy.log
 
 The runner records a byte offset before each test so log checks only scan new output.
 
+## Agentic + Tracer Suite
+
+For real-world-style coverage (project/file creation, task execution, and chat) with tracer analysis:
+
+```bash
+PROXY_DEBUG=1 npm --prefix ts_glm run start:proxy > /tmp/proxy.log 2>&1
+export PROXY_LOG_FILE=/tmp/proxy.log
+AGENT_CMD='opencode run -m glm-local/glm-4.7 --format json' \
+  webwrapper-eval/run_agentic_trace_suite.sh
+```
+
+This runs tests matching `^agentic-` and writes:
+
+- `webwrapper-eval/evidence/agentic_trace_summary.txt`
+- `webwrapper-eval/evidence/agentic_trace_summary.json`
+
+Override with:
+
+- `TEST_FILTER` (for a subset of `agentic-*` tests)
+- `AGENT_CMD` (alternate agent invocation)
+
 ## Test Mode (Strict Coverage)
 
 Some strict checks rely on test-only directives gated by `PROXY_TEST_MODE=1`. These directives are **no-ops** unless test mode is enabled.

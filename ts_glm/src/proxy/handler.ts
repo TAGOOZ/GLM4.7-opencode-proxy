@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { GLMClient } from "../glmClient.js";
-import { debugLog } from "./debug.js";
+import { debugLog, traceAsync, traceSpanStart, traceSync } from "./debug.js";
 import {
   PROXY_ALWAYS_SEND_SYSTEM,
   PROXY_COMPACT_RESET,
@@ -54,8 +54,15 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
   const handleChatCompletion = async (request: FastifyRequest, reply: FastifyReply) => {
     const requestId = crypto.randomUUID().slice(0, 8);
     reply.header("x-proxy-request-id", requestId);
+    const endRequestTrace = traceSpanStart("request_total", { requestId });
+    try {
     const confirmHandled = tryHandlePendingConfirmation(request, reply);
     if (confirmHandled.handled) return;
+    const prepared = await traceAsync(
+      "prepare_chat_request",
+      () => prepareChatRequest(request, requestId),
+      { requestId },
+    );
     const {
       model,
       messages,
@@ -81,7 +88,7 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
       toolChoiceUnknownFunction,
       confirmationScope,
       systemText,
-    } = await prepareChatRequest(request, requestId);
+    } = prepared;
     if (toolChoiceUnknownFunction) {
       const content = `Unknown tool in tool_choice: ${toolChoiceUnknownFunction}`;
       if (stream) {
@@ -121,11 +128,20 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
       "Use the tool schema's exact path key (path/filePath/file_path).",
     ].join("\n");
     const plannerSystemText = [systemText, runtimeWorkspaceSystem].filter(Boolean).join("\n\n");
-    const baseMessages = buildMessages(
-      contextConfig,
-      sanitizedMessages,
-      shouldAttemptTools ? tools : [],
-      shouldAttemptTools ? plannerSystemText : systemText,
+    const baseMessages = traceSync(
+      "build_base_messages",
+      () =>
+        buildMessages(
+          contextConfig,
+          sanitizedMessages,
+          shouldAttemptTools ? tools : [],
+          shouldAttemptTools ? plannerSystemText : systemText,
+        ),
+      {
+        requestId,
+        sanitizedMessageCount: sanitizedMessages.length,
+        toolCount: shouldAttemptTools ? tools.length : 0,
+      },
     );
     let glmMessages = baseMessages.messages;
     let glmStats = baseMessages.stats;
@@ -153,7 +169,15 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
         shouldAttemptTools ? plannerSystemText : systemText,
       );
       const signatureChanged = signature !== lastSignature;
-      const deltaResult = computeDeltaMessages(sanitizedMessages, lastMessages);
+      const deltaResult = traceSync(
+        "history_compute_delta",
+        () => computeDeltaMessages(sanitizedMessages, lastMessages),
+        {
+          requestId,
+          currentMessages: sanitizedMessages.length,
+          previousMessages: lastMessages.length,
+        },
+      );
       if (deltaResult.reset || signatureChanged) {
         resetChat();
         chatId = null;
@@ -190,12 +214,28 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
             ? plannerSystemText
             : systemText
           : "";
-      const deltaConverted = convertMessages(injectedDeltaMessages, toolSeed, {
-        toolMaxLines: contextConfig.toolMaxLines,
-        toolMaxChars: contextConfig.toolMaxChars,
-        extraSystem,
-      });
-      const compacted = compactMessages(deltaConverted, contextConfig);
+      const deltaConverted = traceSync(
+        "history_convert_messages",
+        () =>
+          convertMessages(injectedDeltaMessages, toolSeed, {
+            toolMaxLines: contextConfig.toolMaxLines,
+            toolMaxChars: contextConfig.toolMaxChars,
+            extraSystem,
+          }),
+        {
+          requestId,
+          deltaMessageCount: injectedDeltaMessages.length,
+          toolSeedCount: toolSeed.length,
+        },
+      );
+      const compacted = traceSync(
+        "history_compact_messages",
+        () => compactMessages(deltaConverted, contextConfig),
+        {
+          requestId,
+          convertedCount: deltaConverted.length,
+        },
+      );
       glmMessages = compacted.messages;
       glmStats = baseMessages.stats;
       lastMessages =
@@ -221,15 +261,23 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
           toolMaxChars: contextConfig.toolMaxChars,
           extraSystem: plannerSystemText,
         });
-        const withInstruction = compactMessages(
-          [
-            {
-              role: "system",
-              content: POST_TOOL_SYSTEM,
-            },
-            ...instructedMessages,
-          ],
-          contextConfig,
+        const withInstruction = traceSync(
+          "post_tool_compact_messages",
+          () =>
+            compactMessages(
+              [
+                {
+                  role: "system",
+                  content: POST_TOOL_SYSTEM,
+                },
+                ...instructedMessages,
+              ],
+              contextConfig,
+            ),
+          {
+            requestId,
+            instructedCount: instructedMessages.length,
+          },
         );
         glmMessages = withInstruction.messages;
         glmStats = withInstruction.stats;
@@ -252,19 +300,31 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
       chatId: string,
       requestMessages: { role: string; content: string }[],
       options?: { parentMessageId?: string | null },
-    ) => {
-      const detailed = await collectGlmResponseDetailed(client, chatId, requestMessages, {
-        enableThinking: enableThinkingFinal,
-        features: featureOverrides,
-        includeHistory: useHistoryThisRequest,
-        parentMessageId: options?.parentMessageId,
-      });
-      thinkingRef.value = detailed.thinking;
-      return detailed.content;
-    };
+    ) =>
+      traceAsync(
+        "glm_collect_response",
+        async () => {
+          const detailed = await collectGlmResponseDetailed(client, chatId, requestMessages, {
+            enableThinking: enableThinkingFinal,
+            features: featureOverrides,
+            includeHistory: useHistoryThisRequest,
+            parentMessageId: options?.parentMessageId,
+          });
+          thinkingRef.value = detailed.thinking;
+          return detailed.content;
+        },
+        {
+          requestId,
+          chatId,
+          messageCount: requestMessages.length,
+          includeHistory: useHistoryThisRequest,
+          enableThinking: enableThinkingFinal,
+          parentMessageId: options?.parentMessageId ?? "[auto]",
+        },
+      );
 
     if (shouldAttemptTools) {
-      return handlePlannerFlow({
+      return await handlePlannerFlow({
         reply,
         model,
         stream,
@@ -298,7 +358,7 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
     }
 
     if (stream) {
-      return handleStreamNoTools({
+      return await handleStreamNoTools({
         reply,
         model,
         tools,
@@ -321,7 +381,7 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
       });
     }
 
-    return handleNonStreamNoTools({
+    return await handleNonStreamNoTools({
       reply,
       model,
       tools,
@@ -338,7 +398,9 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
       toolChoiceFunctionName,
       confirmationScope,
     });
-
+    } finally {
+      endRequestTrace();
+    }
   };
 
   return handleChatCompletion;

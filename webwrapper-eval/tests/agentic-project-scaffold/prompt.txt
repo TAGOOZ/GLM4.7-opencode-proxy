@@ -1,0 +1,9 @@
+Create a tiny Python project at webwrapper-eval/tmp/agentic-project-scaffold with:
+1) README.md containing the line "# Agentic Demo"
+2) requirements.txt containing exactly "click==8.1.7"
+3) src/main.py that prints "agentic-ok"
+
+Then run:
+python3 webwrapper-eval/tmp/agentic-project-scaffold/src/main.py
+
+Finish with one line that includes "agentic-ok".

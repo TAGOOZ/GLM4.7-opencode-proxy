@@ -1,5 +1,6 @@
 import { PROXY_DEBUG, PROXY_PLANNER_MAX_RETRIES } from "../constants.js";
 import { estimateMessagesTokens } from "../context.js";
+import { traceAsync, traceSync } from "../debug.js";
 import { tryParseModelOutput, tryRepairPlannerOutput } from "../tools/parse.js";
 
 type ParsedOutput = ReturnType<typeof tryParseModelOutput>;
@@ -53,7 +54,10 @@ export const parsePlannerOutput = async (
   let responseText = initialResponseText;
   let responsePromptTokens = initialPromptTokens;
 
-  let parsed = parseWithRepair(responseText);
+  let parsed = traceSync("planner_parse_initial", () => parseWithRepair(responseText), {
+    chatId: activeChatId,
+    responseChars: responseText.length,
+  });
   logParseError(parsed);
   if (!parsed.ok && PROXY_PLANNER_MAX_RETRIES > 0) {
     // one retry with corrective message
@@ -62,15 +66,27 @@ export const parsePlannerOutput = async (
       content: "Return ONLY valid JSON following the schema. No extra text or analysis.",
     };
     const correctedMessages = [...glmMessages, corrective];
-    responseText = await collectModelResponse(activeChatId, correctedMessages, {
-      parentMessageId: plannerParentMessageId,
-    });
+    responseText = await traceAsync(
+      "planner_retry_collect_response",
+      () =>
+        collectModelResponse(activeChatId, correctedMessages, {
+          parentMessageId: plannerParentMessageId,
+        }),
+      {
+        chatId: activeChatId,
+        retry: 1,
+        messageCount: correctedMessages.length,
+      },
+    );
     responsePromptTokens = estimateMessagesTokens(correctedMessages);
     if (PROXY_DEBUG) {
       const preview = responseText.length > 400 ? `${responseText.slice(0, 400)}...` : responseText;
       console.log("proxy_debug model_retry_raw:", preview);
     }
-    parsed = parseWithRepair(responseText);
+    parsed = traceSync("planner_parse_retry1", () => parseWithRepair(responseText), {
+      chatId: activeChatId,
+      responseChars: responseText.length,
+    });
     logParseError(parsed);
   }
 
@@ -80,15 +96,27 @@ export const parsePlannerOutput = async (
       content: "Return ONLY valid JSON object. No markdown, no analysis, no extra keys.",
     };
     const stricterMessages = [...glmMessages, stricter];
-    responseText = await collectModelResponse(activeChatId, stricterMessages, {
-      parentMessageId: plannerParentMessageId,
-    });
+    responseText = await traceAsync(
+      "planner_retry_collect_response",
+      () =>
+        collectModelResponse(activeChatId, stricterMessages, {
+          parentMessageId: plannerParentMessageId,
+        }),
+      {
+        chatId: activeChatId,
+        retry: 2,
+        messageCount: stricterMessages.length,
+      },
+    );
     responsePromptTokens = estimateMessagesTokens(stricterMessages);
     if (PROXY_DEBUG) {
       const preview = responseText.length > 400 ? `${responseText.slice(0, 400)}...` : responseText;
       console.log("proxy_debug model_retry2_raw:", preview);
     }
-    parsed = parseWithRepair(responseText);
+    parsed = traceSync("planner_parse_retry2", () => parseWithRepair(responseText), {
+      chatId: activeChatId,
+      responseChars: responseText.length,
+    });
     logParseError(parsed);
   }
 

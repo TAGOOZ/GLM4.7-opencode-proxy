@@ -1,0 +1,10 @@
+Do this task using tools:
+1) Create folder webwrapper-eval/tmp/agentic-task-execution
+2) Create numbers.txt with exactly:
+7
+11
+13
+3) Compute their sum using a shell command
+4) Save only the sum in webwrapper-eval/tmp/agentic-task-execution/sum.txt
+
+Final answer format: SUM=<number>

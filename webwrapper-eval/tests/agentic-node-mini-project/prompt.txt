@@ -1,0 +1,6 @@
+Create a minimal Node project at webwrapper-eval/tmp/agentic-node-mini-project:
+1) package.json with name "agentic-node-mini-project" and start script "node index.js"
+2) index.js that prints "service-ready"
+3) Run: node webwrapper-eval/tmp/agentic-node-mini-project/index.js
+
+Final answer must include "service-ready".

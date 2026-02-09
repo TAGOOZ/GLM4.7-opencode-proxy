@@ -21,6 +21,8 @@ const truncate = (value: string, limit: number) => {
   return value.slice(0, limit) + `...[truncated ${value.length - limit} chars]`;
 };
 
+const roundMs = (value: number): number => Math.round(value * 100) / 100;
+
 const debugLog = (...args: any[]) => {
   if (!PROXY_DEBUG) return;
   console.log("proxy_debug", nowIso(), ...args);
@@ -46,5 +48,44 @@ const writeDebugDump = async (prefix: string, payload: unknown) => {
   }
 };
 
-export { debugDump, debugLog, truncate, safeJson, writeDebugDump };
+const traceSpanStart = (span: string, context?: Record<string, unknown>) => {
+  if (!PROXY_DEBUG) {
+    return (_extra?: Record<string, unknown>) => {};
+  }
+  const startedAt = process.hrtime.bigint();
+  return (extra?: Record<string, unknown>) => {
+    const durationMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+    debugDump("trace_span", {
+      span,
+      duration_ms: roundMs(durationMs),
+      ...(context || {}),
+      ...(extra || {}),
+    });
+  };
+};
 
+const traceSync = <T>(span: string, fn: () => T, context?: Record<string, unknown>): T => {
+  if (!PROXY_DEBUG) return fn();
+  const end = traceSpanStart(span, context);
+  try {
+    return fn();
+  } finally {
+    end();
+  }
+};
+
+const traceAsync = async <T>(
+  span: string,
+  fn: () => Promise<T>,
+  context?: Record<string, unknown>,
+): Promise<T> => {
+  if (!PROXY_DEBUG) return fn();
+  const end = traceSpanStart(span, context);
+  try {
+    return await fn();
+  } finally {
+    end();
+  }
+};
+
+export { debugDump, debugLog, truncate, safeJson, writeDebugDump, traceSpanStart, traceSync, traceAsync };
