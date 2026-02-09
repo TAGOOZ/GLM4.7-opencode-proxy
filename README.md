@@ -1,8 +1,9 @@
 # GLM 4.7 OpenCode Proxy (TypeScript-first)
 
 This repository provides an OpenAI-compatible proxy and CLI for GLM on `chat.z.ai`.
+This project is exprimental and no need to say that the official GLM API is away better from the whole repo.
 
-## Fast Favorite Start (Go Flow)
+## Fast Favorite Start
 
 Use this exact order:
 
