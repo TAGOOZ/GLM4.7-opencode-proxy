@@ -28,10 +28,10 @@ const ARG_SYNONYMS: Record<string, string> = {
 };
 
 const TOOL_NAME_ALIASES: Record<string, string[]> = {
-  read: ["read_file", "readfile", "open_file"],
+  read: ["read_file", "readfile", "open_file", "cat"],
   write: ["write_file", "writefile", "save_file", "create_file"],
-  list: ["list_dir", "listdir"],
-  run: ["run_shell", "shell", "bash"],
+  list: ["list_dir", "listdir", "ls", "dir", "list_allowed_directories"],
+  run: ["run_shell", "shell", "bash", "exec", "execute", "exec_command"],
 };
 
 const normalizeToolName = (name: string) => name.toLowerCase().replace(/[_-]/g, "");

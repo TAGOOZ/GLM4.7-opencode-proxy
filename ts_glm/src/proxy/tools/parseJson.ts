@@ -152,9 +152,60 @@ const repairArgumentsStrings = (text: string): string => {
   return output;
 };
 
+// JSON strings only allow specific escapes. Models sometimes emit backslashes for shell regex or grep
+// patterns (e.g. "\|" or "\(") which is invalid JSON. This repairs those by doubling the backslash
+// inside string literals.
+const escapeInvalidBackslashesInStrings = (text: string): string => {
+  let out = "";
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        out += ch;
+        continue;
+      }
+      if (ch === "\\") {
+        const next = i + 1 < text.length ? text[i + 1] : "";
+        const isValidEscape =
+          next === "\"" ||
+          next === "\\" ||
+          next === "/" ||
+          next === "b" ||
+          next === "f" ||
+          next === "n" ||
+          next === "r" ||
+          next === "t" ||
+          next === "u";
+        if (isValidEscape) {
+          escaped = true;
+          out += ch;
+        } else {
+          // Turn "\" into "\\" and continue; the next char will be processed normally.
+          out += "\\\\";
+        }
+        continue;
+      }
+      if (ch === "\"") {
+        inString = false;
+        out += ch;
+        continue;
+      }
+      out += ch;
+      continue;
+    }
+    if (ch === "\"") inString = true;
+    out += ch;
+  }
+  return out;
+};
+
 const normalizeJsonCandidate = (text: string): string => {
   const newlineFixed = repairUnescapedNewlines(text);
-  const argsFixed = repairArgumentsStrings(newlineFixed);
+  const backslashFixed = escapeInvalidBackslashesInStrings(newlineFixed);
+  const argsFixed = repairArgumentsStrings(backslashFixed);
   const withoutComments = removeComments(argsFixed);
   const withoutTrailing = removeTrailingCommas(withoutComments);
   return withoutTrailing;
