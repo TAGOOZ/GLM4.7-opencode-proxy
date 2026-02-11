@@ -16,6 +16,7 @@ import { buildInstructionMessages, buildMessages } from "./handler/messageHelper
 import { createHandlerFlows } from "./handler/flows.js";
 import { sendContent, sendStreamContent } from "./handler/responseHelpers.js";
 import { createToolDispatch, type RawDispatchState } from "./handler/dispatch.js";
+import { createPromptTelemetryTracker } from "./handler/promptTelemetry.js";
 import { prepareChatRequest } from "./handler/request.js";
 
 type ChatCompletionHandlerDeps = {
@@ -55,6 +56,7 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
     const requestId = crypto.randomUUID().slice(0, 8);
     reply.header("x-proxy-request-id", requestId);
     const endRequestTrace = traceSpanStart("request_total", { requestId });
+    const promptTelemetry = createPromptTelemetryTracker();
     try {
     const confirmHandled = tryHandlePendingConfirmation(request, reply);
     if (confirmHandled.handled) return;
@@ -300,8 +302,20 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
       chatId: string,
       requestMessages: { role: string; content: string }[],
       options?: { parentMessageId?: string | null },
-    ) =>
-      traceAsync(
+    ) => {
+      const promptStats = promptTelemetry.record(requestMessages);
+      if (PROXY_DEBUG) {
+        debugLog("request", requestId, "prompt_stats", {
+          call: promptStats.collect_call_index,
+          prompt_chars: promptStats.prompt_chars,
+          system_chars: promptStats.system_chars,
+          history_chars: promptStats.history_chars,
+          prompt_chars_delta_prev: promptStats.prompt_chars_delta_prev,
+          prompt_chars_delta_first: promptStats.prompt_chars_delta_first,
+          tool_count: shouldAttemptTools ? tools.length : 0,
+        });
+      }
+      return traceAsync(
         "glm_collect_response",
         async () => {
           const detailed = await collectGlmResponseDetailed(client, chatId, requestMessages, {
@@ -317,11 +331,19 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
           requestId,
           chatId,
           messageCount: requestMessages.length,
+          prompt_chars: promptStats.prompt_chars,
+          system_chars: promptStats.system_chars,
+          history_chars: promptStats.history_chars,
+          prompt_chars_delta_prev: promptStats.prompt_chars_delta_prev,
+          prompt_chars_delta_first: promptStats.prompt_chars_delta_first,
+          collect_call_index: promptStats.collect_call_index,
+          tool_count: shouldAttemptTools ? tools.length : 0,
           includeHistory: useHistoryThisRequest,
           enableThinking: enableThinkingFinal,
           parentMessageId: options?.parentMessageId ?? "[auto]",
         },
       );
+    };
 
     if (shouldAttemptTools) {
       return await handlePlannerFlow({
@@ -399,7 +421,8 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
       confirmationScope,
     });
     } finally {
-      endRequestTrace();
+      const promptSummary = promptTelemetry.summary();
+      endRequestTrace(promptSummary || { collect_calls: 0 });
     }
   };
 

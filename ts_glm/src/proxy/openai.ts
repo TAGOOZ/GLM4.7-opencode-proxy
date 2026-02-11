@@ -53,6 +53,20 @@ const openaiContentResponse = (content: string, model: string, usage?: Record<st
   ...(usage ? { usage } : {}),
 });
 
+// Some clients validate stream tool_calls entries strictly and require an "index" field.
+// In stream deltas we keep only the standard fields and ensure index is present.
+const sanitizeStreamToolCalls = (toolCalls: any[]) => {
+  return (Array.isArray(toolCalls) ? toolCalls : []).map((call, i) => {
+    const { id, type, function: fn, index } = call || {};
+    const out: any = {};
+    out.index = typeof index === "number" ? index : i;
+    if (id != null) out.id = id;
+    out.type = type || "function";
+    out.function = fn || {};
+    return out;
+  });
+};
+
 const appendReasoningChunk = (
   chunks: string[],
   meta: { id: string; created: number; model: string },
@@ -138,7 +152,7 @@ const streamToolCalls = (
   // Usage on streamed tool_calls isn't consistently supported; keep it in the final chunk only.
   streamAssistantDelta({
     model,
-    delta: { role: "assistant", tool_calls: toolCalls },
+    delta: { role: "assistant", tool_calls: sanitizeStreamToolCalls(toolCalls) },
     finishReason: "tool_calls",
     usage,
     reasoningContent,
