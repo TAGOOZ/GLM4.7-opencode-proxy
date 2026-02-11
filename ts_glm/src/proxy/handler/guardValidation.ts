@@ -1,3 +1,4 @@
+import fs from "fs";
 import path from "path";
 import {
   PROXY_ALLOW_ANY_COMMAND,
@@ -5,6 +6,8 @@ import {
   PROXY_ALLOW_NETWORK,
   PROXY_ALLOW_RAW_MUTATIONS,
   PROXY_ALLOW_WEB_SEARCH,
+  PROXY_AUTO_READ_BEFORE_WRITE,
+  PROXY_AUTO_READ_BEFORE_WRITE_MAX_BYTES,
   PROXY_CONFIRM_DANGEROUS_COMMANDS,
   PROXY_MAX_ACTIONS_PER_TURN,
 } from "../constants.js";
@@ -282,6 +285,89 @@ const validateToolCalls = (
   registry: Map<string, ToolInfo>,
   requiredToolName?: string | null,
 ): GuardResult => {
+  const maybeInjectReadBeforeWrite = (): void => {
+    if (!PROXY_AUTO_READ_BEFORE_WRITE) return;
+    if (!Array.isArray(toolCalls) || toolCalls.length === 0) return;
+
+    const readKeys = new Set<string>();
+    const toKey = (rawPath: string): string => rawPath.trim().replace(/\\/g, "/");
+
+    const resolveExistingFile = (rawPath: string): { absPath: string; size: number } | null => {
+      const trimmed = rawPath.trim();
+      if (!trimmed) return null;
+      const candidates: string[] = [];
+      if (path.isAbsolute(trimmed)) {
+        candidates.push(path.resolve(trimmed));
+      } else {
+        for (const root of WORKSPACE_ROOTS) {
+          candidates.push(path.resolve(root, trimmed));
+        }
+        candidates.push(path.resolve(process.cwd(), trimmed));
+      }
+      for (const abs of candidates) {
+        try {
+          const st = fs.statSync(abs);
+          if (!st.isFile()) continue;
+          return { absPath: abs, size: st.size };
+        } catch {
+          // ignore
+        }
+      }
+      return null;
+    };
+
+    // First pass: mark any paths already being read in this batch.
+    for (const call of toolCalls) {
+      const toolName = normalizeToolName(call?.function?.name || call?.name || "");
+      if (toolName !== "read" && toolName !== "readfile") continue;
+      const parsed = parseToolCallArguments(call?.function?.arguments ?? call?.arguments ?? {}, toolName);
+      if (!parsed.ok) continue;
+      const args = parsed.args;
+      const pathValue = String(args.path ?? args.filePath ?? args.file_path ?? args.dir ?? "").trim();
+      if (!pathValue) continue;
+      readKeys.add(toKey(pathValue));
+    }
+
+    const expanded: any[] = [];
+    for (const call of toolCalls) {
+      const toolName = normalizeToolName(call?.function?.name || call?.name || "");
+      if (toolName === "write" || toolName === "writefile") {
+        const parsed = parseToolCallArguments(call?.function?.arguments ?? call?.arguments ?? {}, toolName);
+        if (parsed.ok) {
+          const args = parsed.args;
+          const rawPath = String(args.path ?? args.filePath ?? args.file_path ?? args.dir ?? "").trim();
+          const key = toKey(rawPath);
+          if (rawPath && !readKeys.has(key)) {
+            const existing = resolveExistingFile(rawPath);
+            if (existing && existing.size <= PROXY_AUTO_READ_BEFORE_WRITE_MAX_BYTES) {
+              expanded.push({
+                id: `call_auto_read_${Date.now()}_${expanded.length}`,
+                type: "function",
+                index: expanded.length,
+                function: {
+                  name: "read",
+                  arguments: JSON.stringify({ filePath: rawPath }),
+                },
+              });
+              readKeys.add(key);
+            }
+          }
+        }
+      }
+      expanded.push(call);
+    }
+
+    if (expanded.length !== toolCalls.length) {
+      // Ensure deterministic index fields for streaming clients that require them.
+      for (let i = 0; i < expanded.length; i += 1) {
+        if (expanded[i] && typeof expanded[i] === "object") expanded[i].index = i;
+      }
+      toolCalls.splice(0, toolCalls.length, ...expanded);
+    }
+  };
+
+  maybeInjectReadBeforeWrite();
+
   if (PROXY_MAX_ACTIONS_PER_TURN > 0 && toolCalls.length > PROXY_MAX_ACTIONS_PER_TURN) {
     return confirmOrBlock(
       registry,
@@ -295,8 +381,33 @@ const validateToolCalls = (
     (source === "explicit" && PROXY_ALLOW_EXPLICIT_MUTATIONS) ||
     (source === "raw" && PROXY_ALLOW_RAW_MUTATIONS);
   const requiredToolNorm = requiredToolName ? normalizeToolName(requiredToolName) : null;
+
+  const resolveExistingFile = (candidate: string): { absPath: string; size: number } | null => {
+    const trimmed = String(candidate || "").trim();
+    if (!trimmed) return null;
+    const candidates: string[] = [];
+    if (path.isAbsolute(trimmed)) {
+      candidates.push(path.resolve(trimmed));
+    } else {
+      for (const root of WORKSPACE_ROOTS) {
+        candidates.push(path.resolve(root, trimmed));
+      }
+      candidates.push(path.resolve(process.cwd(), trimmed));
+    }
+    for (const abs of candidates) {
+      try {
+        const st = fs.statSync(abs);
+        if (!st.isFile()) continue;
+        return { absPath: abs, size: st.size };
+      } catch {
+        // ignore
+      }
+    }
+    return null;
+  };
+
   for (const call of toolCalls) {
-    const toolName = normalizeToolName(call?.function?.name || call?.name || "");
+    let toolName = normalizeToolName(call?.function?.name || call?.name || "");
     const isShellTool =
       toolName === "run" ||
       toolName === "runshell" ||
@@ -310,8 +421,8 @@ const validateToolCalls = (
         toolCalls,
       );
     }
-    const toolInfo = findTool(registry, toolName);
-    const resolvedToolName = normalizeToolName(
+    let toolInfo = findTool(registry, toolName);
+    let resolvedToolName = normalizeToolName(
       toolInfo?.tool?.function?.name || toolInfo?.tool?.name || toolName,
     );
     if (requiredToolNorm && resolvedToolName !== requiredToolNorm) {
@@ -336,6 +447,40 @@ const validateToolCalls = (
     args = parsedArgs.args;
     if (parsedArgs.rewritten) {
       rewriteToolCallArgs(call, args);
+    }
+
+    // If the model tries to overwrite an existing file using write, many OpenCode environments
+    // will block it unless a prior read happened in a previous turn. Rewrite to an edit that
+    // replaces the entire file, using the on-disk contents as oldString.
+    if ((toolName === "write" || toolName === "writefile") && typeof args.content === "string") {
+      const rawPath = String(args.path ?? args.filePath ?? args.file_path ?? "").trim();
+      if (rawPath) {
+        const existing = resolveExistingFile(rawPath);
+        if (existing && existing.size <= MAX_WRITE_CHARS) {
+          try {
+            const oldString = fs.readFileSync(existing.absPath, "utf8");
+            if (!oldString.includes("\0")) {
+              const editInfo = findTool(registry, "edit") || findTool(registry, "editfile");
+              const editToolName = normalizeToolName(editInfo?.tool?.function?.name || editInfo?.tool?.name || "edit");
+              const editPathKey = resolvePreferredPathArgKey(args, editInfo);
+              const editArgs: Record<string, unknown> = {
+                [editPathKey]: rawPath,
+                oldString,
+                newString: args.content,
+              };
+              call.function = call.function || {};
+              call.function.name = editToolName;
+              rewriteToolCallArgs(call, editArgs);
+              toolName = editToolName;
+              toolInfo = editInfo;
+              resolvedToolName = editToolName;
+              args = editArgs;
+            }
+          } catch {
+            // If we can't read the file, fall back to the original write flow (may be confirmed/blocked).
+          }
+        }
+      }
     }
 
     if (QUESTION_TOOL_NAMES_NORM.has(toolName)) {

@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import path from "node:path";
 import { buildToolRegistry, findTool, normalizeArgsForTool } from "../src/proxy/tools/registry.js";
 import { validatePlannerActions, validateToolCalls } from "../src/proxy/handler/guards.js";
@@ -54,6 +55,63 @@ test("normalizeArgsForTool drops unsupported shell metadata args", () => {
   assert.equal("timeout" in normalized, false);
 });
 
+test("validateToolCalls repairs invalid backslash escapes in JSON argument strings", () => {
+  const registry = buildToolRegistry([
+    {
+      function: {
+        name: "bash",
+        parameters: { properties: { command: { type: "string" } } },
+      },
+    },
+  ]);
+
+  const toolCalls: any[] = [
+    {
+      id: "call_bash_invalid_escape",
+      type: "function",
+      function: {
+        name: "bash",
+        // Invalid JSON due to "\|" escape; should be repaired to "\\|".
+        arguments: "{\"command\":\"echo a\\|b\"}",
+      },
+    },
+  ];
+
+  const result = validateToolCalls(toolCalls, "planner", registry);
+  assert.equal(result.ok, true);
+  const rewrittenArgs = JSON.parse(String(toolCalls[0].function.arguments));
+  assert.equal(rewrittenArgs.command, "echo a\\|b");
+});
+
+test("validateToolCalls recovers common malformed edit arguments with unescaped quotes/newlines", () => {
+  const registry = buildToolRegistry([
+    {
+      function: {
+        name: "edit",
+        parameters: { properties: { filePath: { type: "string" }, oldString: { type: "string" }, newString: { type: "string" } } },
+      },
+    },
+  ]);
+
+  const rawArgs =
+    "{\"filePath\":\"src/main.rs\",\"oldString\":\"fn main() {\\n    println!(\"Hello, world!\");\\n}\\n\",\"newString\":\"fn main() {\\n    println!(\"ok\");\\n}\\n\"}";
+
+  const toolCalls: any[] = [
+    {
+      id: "call_edit_bad_json",
+      type: "function",
+      function: { name: "edit", arguments: rawArgs },
+    },
+  ];
+
+  const result = validateToolCalls(toolCalls, "planner", registry);
+  assert.equal(result.ok, true);
+  const rewrittenArgs = JSON.parse(String(toolCalls[0].function.arguments));
+  assert.equal(rewrittenArgs.filePath, "src/main.rs");
+  assert.ok(String(rewrittenArgs.oldString).includes("println!(\"Hello, world!\")"));
+  assert.ok(String(rewrittenArgs.newString).includes("println!(\"ok\")"));
+});
+
 test("findTool does not fuzzy-match short prefixes", () => {
   const registry = buildToolRegistry([
     {
@@ -70,6 +128,33 @@ test("findTool does not fuzzy-match short prefixes", () => {
     },
   ]);
   assert.equal(findTool(registry, "re"), null);
+});
+
+test("findTool resolves common planner aliases for list/run/read tools", () => {
+  const registry = buildToolRegistry([
+    {
+      function: {
+        name: "list",
+        parameters: { properties: { path: { type: "string" } } },
+      },
+    },
+    {
+      function: {
+        name: "run",
+        parameters: { properties: { command: { type: "string" } } },
+      },
+    },
+    {
+      function: {
+        name: "read",
+        parameters: { properties: { path: { type: "string" } } },
+      },
+    },
+  ]);
+  assert.equal(findTool(registry, "ls")?.tool.function?.name, "list");
+  assert.equal(findTool(registry, "list_allowed_directories")?.tool.function?.name, "list");
+  assert.equal(findTool(registry, "exec")?.tool.function?.name, "run");
+  assert.equal(findTool(registry, "cat")?.tool.function?.name, "read");
 });
 
 test("bash command-only schema is not blocked by model-added description/workdir args", () => {
@@ -214,6 +299,48 @@ test("missing shell command is confirmable when question tool exists", () => {
   assert.equal(result.ok, false);
   assert.equal(result.reason, "confirmation_required");
   assert.equal(result.pendingConfirmation?.blockedReason, "missing_command");
+});
+
+test("validateToolCalls rewrites write-to-existing-file into edit replacement", () => {
+  const registry = buildToolRegistry([
+    {
+      function: {
+        name: "edit",
+        parameters: {
+          properties: { filePath: { type: "string" }, oldString: { type: "string" }, newString: { type: "string" } },
+        },
+      },
+    },
+    {
+      function: {
+        name: "write",
+        parameters: { properties: { filePath: { type: "string" }, content: { type: "string" } } },
+      },
+    },
+  ]);
+
+  const relPath = path.join("webwrapper-eval", "tmp", "rewrite-write-to-edit.txt");
+  fs.mkdirSync(path.dirname(relPath), { recursive: true });
+  fs.writeFileSync(relPath, "old\n", "utf8");
+
+  const toolCalls: any[] = [
+    {
+      id: "call_write_existing",
+      type: "function",
+      function: {
+        name: "write",
+        arguments: JSON.stringify({ filePath: relPath, content: "new\n" }),
+      },
+    },
+  ];
+
+  const result = validateToolCalls(toolCalls, "planner", registry);
+  assert.equal(result.ok, true);
+  assert.equal(toolCalls[0]?.function?.name, "edit");
+  const rewrittenArgs = JSON.parse(String(toolCalls[0].function.arguments));
+  assert.equal(rewrittenArgs.filePath, relPath);
+  assert.equal(rewrittenArgs.oldString, "old\n");
+  assert.equal(rewrittenArgs.newString, "new\n");
 });
 
 test("heuristic shell command with chained operators is blocked", () => {

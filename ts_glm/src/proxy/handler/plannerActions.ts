@@ -118,11 +118,30 @@ export const buildPlannerActionToolCall = (params: {
   let args = normalizeArgsForTool(toolInfo, action.args || {});
 
   // Repair common planner mistakes: missing path/filePath on read tools.
-  // Never infer a target path for mutation tools (no heuristic mutations).
+  // Never infer a target path for mutation tools by default (no heuristic mutations).
   const normalizedTool = String(toolName || "").toLowerCase().replace(/[_-]/g, "");
   const needsPath = normalizedTool === "read" || normalizedTool === "readfile";
   const hasPath = args.path != null || (args as any).filePath != null || (args as any).file_path != null;
   if (needsPath && !hasPath) {
+    const inferred = inferRecentFilePath(sanitizedMessages);
+    if (inferred) {
+      const key = toolInfo?.argKeys?.includes("filePath")
+        ? "filePath"
+        : toolInfo?.argKeys?.includes("file_path")
+          ? "file_path"
+          : "path";
+      args = { ...args, [key]: inferred };
+    }
+  }
+
+  // Optional repair for write calls that omit path but include content. This is useful in OpenCode
+  // environments where a missing path would otherwise stall on confirmation.
+  if (
+    (process.env.PROXY_REPAIR_WRITE_MISSING_PATH === "1") &&
+    (normalizedTool === "write" || normalizedTool === "writefile") &&
+    !hasPath &&
+    typeof (args as any).content === "string"
+  ) {
     const inferred = inferRecentFilePath(sanitizedMessages);
     if (inferred) {
       const key = toolInfo?.argKeys?.includes("filePath")

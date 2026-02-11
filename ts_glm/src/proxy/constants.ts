@@ -32,6 +32,18 @@ export const PROXY_ALWAYS_SEND_SYSTEM = process.env.PROXY_ALWAYS_SEND_SYSTEM !==
 export const PROXY_TEST_MODE = process.env.PROXY_TEST_MODE === "1";
 export const PROXY_ALLOW_USER_HEURISTICS = process.env.PROXY_ALLOW_USER_HEURISTICS !== "0";
 
+// OpenCode file-mutation tools can require that the file was previously read (in a prior step).
+// When enabled, the proxy may stage mutations behind an injected read to avoid tool execution errors.
+export const PROXY_STAGE_FILE_MUTATIONS = process.env.PROXY_STAGE_FILE_MUTATIONS !== "0";
+
+// OpenCode's write tool may require a prior read of an existing target file. To reduce round-trips
+// and avoid stalls when the model forgets, the proxy can inject a small read before such writes.
+// Default: disabled. Enable explicitly with PROXY_AUTO_READ_BEFORE_WRITE=1.
+export const PROXY_AUTO_READ_BEFORE_WRITE = process.env.PROXY_AUTO_READ_BEFORE_WRITE === "1";
+export const PROXY_AUTO_READ_BEFORE_WRITE_MAX_BYTES = Number(
+  process.env.PROXY_AUTO_READ_BEFORE_WRITE_MAX_BYTES || "8192",
+);
+
 // Prompt sizing controls. These significantly affect latency with OpenCode because tool schemas and
 // client system prompts can be very large.
 export const PROXY_TOOL_PROMPT_INCLUDE_SCHEMA = process.env.PROXY_TOOL_PROMPT_INCLUDE_SCHEMA === "1";

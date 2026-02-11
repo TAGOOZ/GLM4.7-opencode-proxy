@@ -49,6 +49,49 @@ const tryRecoverWriteArgs = (rawArgs: string): Record<string, unknown> | null =>
   };
 };
 
+const stripTrailingJunkBeforeNextKey = (value: string): string => {
+  let out = value;
+  // common patterns: ..."\n",  or ..."\n",\n  or ..."\n" ,
+  out = out.replace(/"\s*,\s*$/s, "");
+  out = out.replace(/"\s*$/s, "");
+  return out;
+};
+
+const tryRecoverEditArgs = (rawArgs: string): Record<string, unknown> | null => {
+  const text = String(rawArgs || "").trim();
+  if (!text.startsWith("{")) return null;
+
+  const pathMatch = text.match(/"(filePath|file_path|path)"\s*:\s*"([^"]*)"/);
+  if (!pathMatch) return null;
+  const pathKey = pathMatch[1];
+  const pathValue = decodeCommonEscapes(pathMatch[2] || "");
+  if (!pathValue) return null;
+
+  const findKey = (key: string): number => text.indexOf(`"${key}"`);
+  const oldKeyIdx = findKey("oldString") !== -1 ? findKey("oldString") : findKey("old_string");
+  const newKeyIdx = findKey("newString") !== -1 ? findKey("newString") : findKey("new_string");
+  if (oldKeyIdx === -1 || newKeyIdx === -1 || newKeyIdx <= oldKeyIdx) return null;
+
+  const oldValueStart = text.indexOf("\"", text.indexOf(":", oldKeyIdx) + 1);
+  const newValueStart = text.indexOf("\"", text.indexOf(":", newKeyIdx) + 1);
+  if (oldValueStart === -1 || newValueStart === -1 || newValueStart <= oldValueStart) return null;
+
+  const oldRaw = text.slice(oldValueStart + 1, newKeyIdx);
+  const objectEnd = text.lastIndexOf("}");
+  if (objectEnd === -1 || objectEnd <= newValueStart) return null;
+  const newRaw = text.slice(newValueStart + 1, objectEnd);
+
+  const oldString = stripTrailingJunkBeforeNextKey(oldRaw);
+  const newString = stripTrailingJunkBeforeNextKey(newRaw.trimEnd());
+
+  if (!oldString.trim() || !newString.trim()) return null;
+  return {
+    [pathKey]: pathValue,
+    oldString,
+    newString,
+  };
+};
+
 const parseToolCallArguments = (
   rawArgs: unknown,
   toolName?: string,
@@ -103,6 +146,10 @@ const parseToolCallArguments = (
     const normalized = normalizeToolName(String(toolName || ""));
     if (normalized === "write" || normalized === "writefile") {
       const recovered = tryRecoverWriteArgs(rawArgs);
+      if (recovered) return { ok: true, args: recovered, rewritten: true };
+    }
+    if (normalized === "edit" || normalized === "editfile") {
+      const recovered = tryRecoverEditArgs(rawArgs);
       if (recovered) return { ok: true, args: recovered, rewritten: true };
     }
   }

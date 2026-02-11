@@ -16,6 +16,7 @@ import { buildInstructionMessages, buildMessages } from "./handler/messageHelper
 import { createHandlerFlows } from "./handler/flows.js";
 import { sendContent, sendStreamContent } from "./handler/responseHelpers.js";
 import { createToolDispatch, type RawDispatchState } from "./handler/dispatch.js";
+import { createPromptTelemetryTracker } from "./handler/promptTelemetry.js";
 import { prepareChatRequest } from "./handler/request.js";
 
 type ChatCompletionHandlerDeps = {
@@ -55,6 +56,7 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
     const requestId = crypto.randomUUID().slice(0, 8);
     reply.header("x-proxy-request-id", requestId);
     const endRequestTrace = traceSpanStart("request_total", { requestId });
+    const promptTelemetry = createPromptTelemetryTracker();
     try {
     const confirmHandled = tryHandlePendingConfirmation(request, reply);
     if (confirmHandled.handled) return;
@@ -118,15 +120,7 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
         console.log("proxy_debug tool_result_preview:", toolPreview);
       }
     }
-    const runtimeWorkspaceSystem = [
-      "Runtime workspace context:",
-      `- cwd: ${process.cwd()}`,
-      "Path policy: use repo-relative paths for tool args whenever possible.",
-      "Prefer explicit file paths for read/write/edit/apply_patch; if unknown, inspect with path '.' first.",
-      "For apply_patch/patch, include explicit target file headers when available (*** Update File: ... or diff --git ...).",
-      "Avoid absolute paths, ~, and ../ traversal in tool args.",
-      "Use the tool schema's exact path key (path/filePath/file_path).",
-    ].join("\n");
+    const runtimeWorkspaceSystem = ["Runtime workspace context:", `- cwd: ${process.cwd()}`].join("\n");
     const plannerSystemText = [systemText, runtimeWorkspaceSystem].filter(Boolean).join("\n\n");
     const baseMessages = traceSync(
       "build_base_messages",
@@ -163,6 +157,7 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
       }
     }
     const useHistoryThisRequest = useGlmHistory && !compactionReset;
+    let historyToolPromptReseeded = false;
     if (useHistoryThisRequest) {
       const signature = buildSignature(
         shouldAttemptTools ? tools : [],
@@ -204,16 +199,9 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
         shouldInjectSystem && !deltaMessages.some((msg: any) => msg.role === "system")
           ? [{ role: "system", content: systemText }, ...deltaMessages]
           : deltaMessages;
-      const toolSeed = alwaysSendSystem ? tools : reseed ? tools : [];
-      const extraSystem = alwaysSendSystem
-        ? shouldAttemptTools
-          ? plannerSystemText
-          : systemText
-        : reseed
-          ? shouldAttemptTools
-            ? plannerSystemText
-            : systemText
-          : "";
+      historyToolPromptReseeded = shouldAttemptTools && reseed;
+      const toolSeed = historyToolPromptReseeded ? tools : [];
+      const extraSystem = historyToolPromptReseeded ? plannerSystemText : "";
       const deltaConverted = traceSync(
         "history_convert_messages",
         () =>
@@ -255,12 +243,15 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
     }
     if (hasToolResult && shouldAttemptTools) {
       if (useHistoryThisRequest) {
-        const toolSeed = tools;
-        const instructedMessages = convertMessages(sanitizedMessages, toolSeed, {
-          toolMaxLines: contextConfig.toolMaxLines,
-          toolMaxChars: contextConfig.toolMaxChars,
-          extraSystem: plannerSystemText,
-        });
+        // In history mode, reuse current request payload and add a light post-tool instruction.
+        // Full tool/system reseed happens only when chat state is reset or the signature changes.
+        const postToolSeed = historyToolPromptReseeded
+          ? convertMessages(sanitizedMessages, tools, {
+              toolMaxLines: contextConfig.toolMaxLines,
+              toolMaxChars: contextConfig.toolMaxChars,
+              extraSystem: plannerSystemText,
+            })
+          : glmMessages;
         const withInstruction = traceSync(
           "post_tool_compact_messages",
           () =>
@@ -270,13 +261,13 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
                   role: "system",
                   content: POST_TOOL_SYSTEM,
                 },
-                ...instructedMessages,
+                ...postToolSeed,
               ],
               contextConfig,
             ),
           {
             requestId,
-            instructedCount: instructedMessages.length,
+            instructedCount: postToolSeed.length,
           },
         );
         glmMessages = withInstruction.messages;
@@ -300,8 +291,20 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
       chatId: string,
       requestMessages: { role: string; content: string }[],
       options?: { parentMessageId?: string | null },
-    ) =>
-      traceAsync(
+    ) => {
+      const promptStats = promptTelemetry.record(requestMessages);
+      if (PROXY_DEBUG) {
+        debugLog("request", requestId, "prompt_stats", {
+          call: promptStats.collect_call_index,
+          prompt_chars: promptStats.prompt_chars,
+          system_chars: promptStats.system_chars,
+          history_chars: promptStats.history_chars,
+          prompt_chars_delta_prev: promptStats.prompt_chars_delta_prev,
+          prompt_chars_delta_first: promptStats.prompt_chars_delta_first,
+          tool_count: shouldAttemptTools ? tools.length : 0,
+        });
+      }
+      return traceAsync(
         "glm_collect_response",
         async () => {
           const detailed = await collectGlmResponseDetailed(client, chatId, requestMessages, {
@@ -317,11 +320,19 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
           requestId,
           chatId,
           messageCount: requestMessages.length,
+          prompt_chars: promptStats.prompt_chars,
+          system_chars: promptStats.system_chars,
+          history_chars: promptStats.history_chars,
+          prompt_chars_delta_prev: promptStats.prompt_chars_delta_prev,
+          prompt_chars_delta_first: promptStats.prompt_chars_delta_first,
+          collect_call_index: promptStats.collect_call_index,
+          tool_count: shouldAttemptTools ? tools.length : 0,
           includeHistory: useHistoryThisRequest,
           enableThinking: enableThinkingFinal,
           parentMessageId: options?.parentMessageId ?? "[auto]",
         },
       );
+    };
 
     if (shouldAttemptTools) {
       return await handlePlannerFlow({
@@ -399,7 +410,8 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
       confirmationScope,
     });
     } finally {
-      endRequestTrace();
+      const promptSummary = promptTelemetry.summary();
+      endRequestTrace(promptSummary || { collect_calls: 0 });
     }
   };
 

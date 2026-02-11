@@ -278,6 +278,31 @@ export const createPlannerFlow = (deps: PlannerFlowDeps) => {
         actions: filterPlannerActionsWithPolicy(parsedData.actions as any[], toolRegistry, allowTodoWrite),
       };
     }
+    if (Array.isArray(parsedData.actions) && parsedData.actions.length > 0) {
+      const knownActions = parsedData.actions.filter((action: any) => findTool(toolRegistry, action.tool));
+      if (knownActions.length !== parsedData.actions.length) {
+        const dropped = parsedData.actions.length - knownActions.length;
+        if (PROXY_DEBUG) {
+          console.log(
+            "proxy_debug planner_actions_filtered_unknown:",
+            JSON.stringify({
+              originalCount: parsedData.actions.length,
+              keptCount: knownActions.length,
+              droppedCount: dropped,
+            }),
+          );
+        }
+        if (toolChoiceRequired && knownActions.length === 0) {
+          const unknownTool = String(parsedData.actions[0]?.tool || "");
+          const content = `Unknown tool: ${unknownTool}`;
+          if (stream) {
+            return deps.sendStreamContent(reply, content, model, glmStats, responsePromptTokens);
+          }
+          return deps.sendContent(reply, content, model, responsePromptTokens, glmStats);
+        }
+        parsedData = { ...parsedData, actions: knownActions };
+      }
+    }
 
     const structural = validatePlannerActions(parsedData.actions as any);
     if (!structural.ok) {
@@ -298,6 +323,10 @@ export const createPlannerFlow = (deps: PlannerFlowDeps) => {
     }
 
     if (parsedData.actions.length === 0) {
+      const recoveredRawDispatch = dispatchRaw(parseRawToolCallsLenient(responseText));
+      if (recoveredRawDispatch) {
+        return recoveredRawDispatch;
+      }
       if (hasToolResult && !String(parsedData.final || "").trim()) {
         return maybeRecoverEmptyActions({
           deps,
@@ -311,15 +340,6 @@ export const createPlannerFlow = (deps: PlannerFlowDeps) => {
       }
       const content = parsedData.final || "";
       return sendFinalContent(content, responsePromptTokens, glmStats);
-    }
-
-    const invalid = parsedData.actions.find((action: any) => !findTool(toolRegistry, action.tool));
-    if (invalid) {
-      const content = `Unknown tool: ${invalid.tool}`;
-      if (stream) {
-        return deps.sendStreamContent(reply, content, model, glmStats, responsePromptTokens);
-      }
-      return deps.sendContent(reply, content, model, responsePromptTokens, glmStats);
     }
 
     const { toolCalls } = buildPlannerToolCalls({

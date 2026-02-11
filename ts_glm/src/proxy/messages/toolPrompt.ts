@@ -10,9 +10,7 @@ const truncateText = (text: string, maxChars: number): string => {
   if (maxChars <= 0) return text;
   const trimmed = text.trim();
   if (trimmed.length <= maxChars) return trimmed;
-  const head = Math.max(1, Math.ceil(maxChars * 0.7));
-  const tail = Math.max(1, maxChars - head);
-  return `${trimmed.slice(0, head)}\n... (${trimmed.length - maxChars} chars truncated) ...\n${trimmed.slice(-tail)}`.trim();
+  return `${trimmed.slice(0, maxChars)}\n... (${trimmed.length - maxChars} chars truncated) ...`.trim();
 };
 
 const extractArgKeys = (parameters: any): string[] => {
@@ -61,56 +59,18 @@ const buildToolPrompt = (tools: any[], extraSystem?: string): string => {
     lines.push(extra);
   }
   lines.push("");
-  lines.push("If tools are needed, include them ONLY in the JSON actions array (no tool_calls output).");
-  lines.push("Args must be valid JSON. Escape quotes and newlines inside strings.");
-  lines.push("Do not include chain-of-thought or analysis in responses. If needed, use the optional \"thought\" field.");
-  lines.push("If system or user instructions require a tool, you must include an action for it.");
-  lines.push("If the user asks to search, browse, fetch, or for latest/trending/news/docs, you must call a tool.");
-  lines.push("");
-  lines.push("Tool selection guidance:");
-  lines.push("- read: open an existing file to inspect contents before changing it.");
-  lines.push("- write: create a new file or replace a file only when explicitly asked to overwrite.");
-  lines.push("- edit: modify an existing file with targeted changes when possible.");
-  lines.push("- when a file change is required, always use write/edit tools instead of pasting code in the final response.");
-  lines.push("- for mutation tools (write/edit/apply_patch/run): include at most one mutation action per response; non-mutating prep actions may come first.");
-  lines.push("- list/glob/grep: discover files or search content before editing.");
-  lines.push("- be cautious when editing high-impact files (package.json, workflows, lockfiles).");
-  lines.push("- use repo-relative paths (avoid absolute paths).");
+  lines.push("Execution rules:");
+  lines.push("- If tools are needed, include them only in JSON actions (never tool_calls output).");
+  lines.push("- Args must be valid JSON and should use declared argument keys.");
+  lines.push("- If a tool is required by the request, include an action for it.");
+  lines.push("- Prefer read/list/glob/grep before mutation when path is unclear.");
+  lines.push("- Use repo-relative paths and explicit targets for file tools.");
   lines.push("- use the tool's declared path key exactly (path/filePath/file_path).");
   lines.push("- never emit read/write/edit/list/listdir actions without an explicit target path.");
-  lines.push("- never emit edit/editfile actions without path/filePath/file_path.");
   lines.push("- apply_patch/patch must include explicit target files in patch text (*** Update File: ... or diff --git ...).");
   lines.push("- do not emit apply_patch/patch without target file headers in the patch body.");
   lines.push("- avoid absolute paths, ~, and ../ traversal; these trigger path guards.");
-  lines.push("- avoid sensitive paths (.env, .ssh, .git, private keys) unless user explicitly confirms.");
-  lines.push("- do not rely on symlink indirection to access paths outside workspace roots.");
-  lines.push("- if path is unclear, list/glob/read first, then issue mutation with a concrete path.");
-  lines.push("- run: avoid mkdir unless the user explicitly asked to create a folder.");
-  lines.push("- explicit tool call: use a line starting with \"% tool_name\" to request a tool directly.");
-  lines.push("- confirmations are handled by the client (e.g., OpenCode permissions).");
-  lines.push("");
-  lines.push("Examples (format only):");
-  lines.push(
-    JSON.stringify({
-      plan: ["inspect file"],
-      actions: [
-        {
-          tool: "TOOL_NAME",
-          args: { path: "README.md" },
-          why: "need the file contents",
-          expect: "file text",
-          safety: { risk: "low", notes: "" },
-        },
-      ],
-    })
-  );
-  lines.push(
-    JSON.stringify({
-      plan: ["answer directly"],
-      actions: [],
-      final: "Concise response to the user.",
-    })
-  );
+  lines.push("- For mutation tools (write/edit/apply_patch/run/delete), emit at most one mutation action per response.");
 
   const prompt = lines.join("\n");
   if (cachedByExtra.size >= 8) cachedByExtra.clear();
