@@ -22,7 +22,12 @@ Rules:
 - If actions.length > 0: omit "final".
 - If actions.length == 0: include "final".
 - "plan" must be a short list of steps.
-- "actions" can be empty.
+- "actions" can be empty only when no tools are needed for the user request.
 - "thought" is optional and will not be shown to the user.
+- Tool-use policy:
+  - If the user asks to create/build/write/edit/run/check code or files and tools are available, you MUST return at least one action.
+  - For actionable requests, actions=[] is invalid unless the user explicitly asked for explanation-only or a clarifying question is required.
+  - Do not place full implementation/code output in "final" when tools are available.
+  - "final" is for concise user-facing response when no tools are needed, or after tool work is complete.
 
-If you need tools, put them in actions. If you do not need tools, return an empty actions array and a final response.`;
+If tools are needed, put them in actions. If tools are not needed, return actions as [] and provide final.`;

@@ -1,14 +1,16 @@
 import {
-  PLANNER_JSON_HINT_REGEX,
+  ACTIONABLE_KEYWORDS,
   PROXY_DEBUG,
+  PROXY_INCLUDE_HISTORY_IN_REQUEST,
   PROXY_PLANNER_COERCE,
 } from "../constants.js";
+import crypto from "node:crypto";
 import { estimateMessagesTokens } from "../context.js";
 import { openaiContentResponse } from "../openai.js";
 import { validatePlannerActions } from "./guards.js";
 import { inferListToolCall, inferReadToolCall, inferSearchToolCall } from "../tools/infer.js";
 import { findTool } from "../tools/registry.js";
-import { parseRawToolCalls } from "../tools/parse.js";
+import { parseRawToolCalls, tryParseModelOutput, tryRepairPlannerOutput } from "../tools/parse.js";
 import { buildInstructionMessages } from "./messageHelpers.js";
 import {
   applyResponseHeaders,
@@ -27,7 +29,33 @@ import {
 import { maybeRecoverEmptyActions } from "./plannerRecovery.js";
 import type { PlannerFlowContext, PlannerFlowDeps } from "./flowTypes.js";
 
+const CODE_LIKE_FINAL_REGEX =
+  /```|<!doctype html>|<html[\s>]|^\s*(import|export|function|class|const|let|var)\b|;\s*$/im;
+const STALL_REPEAT_LIMIT = 3;
+const INSPECT_TOOL_NAMES = new Set(["read", "glob", "grep", "ls", "list"]);
+
+const stableStringify = (value: any): string => {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`).join(",")}}`;
+};
+
+const toolClass = (tool: string): "inspect" | "mutate" | "execute" | "other" => {
+  const name = String(tool || "").trim().toLowerCase();
+  if (INSPECT_TOOL_NAMES.has(name)) return "inspect";
+  if (name === "edit" || name === "write") return "mutate";
+  if (name === "bash" || name === "task") return "execute";
+  return "other";
+};
+
+const hashText = (value: string): string => {
+  return crypto.createHash("sha256").update(String(value || "")).digest("hex").slice(0, 16);
+};
+
 export const createPlannerFlow = (deps: PlannerFlowDeps) => {
+  const plannerStallState = new Map<string, { actionSignature: string; resultHash: string; repeatCount: number }>();
+
   const handlePlannerFlow = async (ctx: PlannerFlowContext) => {
     let responsePromptTokens = ctx.responsePromptTokens;
     let glmMessages = ctx.glmMessages;
@@ -157,7 +185,7 @@ export const createPlannerFlow = (deps: PlannerFlowDeps) => {
       return sendFinalContent(finalContent, finalPromptTokens, finalPayload.stats);
     };
     let plannerParentMessageId: string | null | undefined = undefined;
-    if (!useHistoryThisRequest) {
+    if (!useHistoryThisRequest || !PROXY_INCLUDE_HISTORY_IN_REQUEST) {
       // Planner retries can otherwise incur repeated getChat() calls via getCurrentMessageId().
       // Resolve once per turn and reuse across retries.
       try {
@@ -230,21 +258,9 @@ export const createPlannerFlow = (deps: PlannerFlowDeps) => {
         return fallbackRawDispatch;
       }
       if (hasToolResult) {
-        const looksLikePlannerJson =
-          PLANNER_JSON_HINT_REGEX.test(responseText) || responseText.trim().startsWith("{");
-        if (looksLikePlannerJson) {
-          const finalPayload = buildInstructionMessages(deps.contextConfig, deps.postToolSystem, messages, tools);
-          const finalText = await collectModelResponse(activeChatId, finalPayload.messages);
-          const finalPromptTokens = estimateMessagesTokens(finalPayload.messages);
-          const extractedFinal = extractPlannerFinal(finalText) ?? extractPlannerFinal(responseText);
-          const finalContent = extractedFinal ?? finalText;
-          return sendFinalContent(finalContent, finalPromptTokens, finalPayload.stats);
-        }
-      }
-      if (hasToolResult && responseText.trim()) {
-        const extractedFinal = extractPlannerFinal(responseText);
-        const finalContent = extractedFinal ?? responseText;
-        return sendFinalContent(finalContent, responsePromptTokens, glmStats);
+        const content =
+          "I could not parse a valid planner JSON response after tool results. Please retry the request.";
+        return sendFinalContent(content, responsePromptTokens, glmStats);
       }
       const heuristicFallback = dispatchHeuristicFallback();
       if (heuristicFallback) return heuristicFallback;
@@ -265,42 +281,106 @@ export const createPlannerFlow = (deps: PlannerFlowDeps) => {
       return reply.send(fallback);
     }
 
-    let parsedData = limitPlannerActions(parsed.data);
+    const normalizeParsedData = (input: any) => {
+      let normalized = limitPlannerActions(input);
+      if (Array.isArray(normalized.actions) && normalized.actions.length > 0) {
+        normalized = {
+          ...normalized,
+          actions: filterPlannerActionsWithPolicy(normalized.actions as any[], toolRegistry, allowTodoWrite),
+        };
+      }
+      if (Array.isArray(normalized.actions) && normalized.actions.length > 0) {
+        const knownActions = normalized.actions.filter((action: any) => findTool(toolRegistry, action.tool));
+        if (knownActions.length !== normalized.actions.length) {
+          const dropped = normalized.actions.length - knownActions.length;
+          if (PROXY_DEBUG) {
+            console.log(
+              "proxy_debug planner_actions_filtered_unknown:",
+              JSON.stringify({
+                originalCount: normalized.actions.length,
+                keptCount: knownActions.length,
+                droppedCount: dropped,
+              }),
+            );
+          }
+          if (toolChoiceRequired && knownActions.length === 0) {
+            const unknownTool = String(normalized.actions[0]?.tool || "");
+            return { error: `Unknown tool: ${unknownTool}` };
+          }
+          normalized = { ...normalized, actions: knownActions };
+        }
+      }
+      return { data: normalized };
+    };
+
+    let parsedDataResult = normalizeParsedData(parsed.data);
+    if ("error" in parsedDataResult) {
+      const content = String(parsedDataResult.error || "Unknown tool.");
+      if (stream) {
+        return deps.sendStreamContent(reply, content, model, glmStats, responsePromptTokens);
+      }
+      return deps.sendContent(reply, content, model, responsePromptTokens, glmStats);
+    }
+    let parsedData = parsedDataResult.data;
     if (PROXY_DEBUG) {
       console.log("proxy_debug parsed_actions:", parsedData.actions.length);
       if (parsedData.actions.length) {
         console.log("proxy_debug action_tools:", parsedData.actions.map((a: any) => a.tool).join(","));
       }
     }
-    if (Array.isArray(parsedData.actions) && parsedData.actions.length > 0) {
-      parsedData = {
-        ...parsedData,
-        actions: filterPlannerActionsWithPolicy(parsedData.actions as any[], toolRegistry, allowTodoWrite),
+
+    const actionableIntent = ACTIONABLE_KEYWORDS.some((kw) => String(lastUser || "").toLowerCase().includes(kw));
+    const finalText = String(parsedData.final || "");
+    const hasCodeLikeFinal = CODE_LIKE_FINAL_REGEX.test(finalText);
+    const shouldRepairActionShape =
+      !hasToolResult &&
+      tools.length > 0 &&
+      parsedData.actions.length === 0 &&
+      actionableIntent &&
+      hasCodeLikeFinal;
+
+    if (shouldRepairActionShape) {
+      const repairInstruction = {
+        role: "system" as const,
+        content:
+          "Actionable request detected with tools available. Return ONLY valid planner JSON. actions must include at least one executable tool call. Do not include implementation/code in final.",
       };
-    }
-    if (Array.isArray(parsedData.actions) && parsedData.actions.length > 0) {
-      const knownActions = parsedData.actions.filter((action: any) => findTool(toolRegistry, action.tool));
-      if (knownActions.length !== parsedData.actions.length) {
-        const dropped = parsedData.actions.length - knownActions.length;
-        if (PROXY_DEBUG) {
-          console.log(
-            "proxy_debug planner_actions_filtered_unknown:",
-            JSON.stringify({
-              originalCount: parsedData.actions.length,
-              keptCount: knownActions.length,
-              droppedCount: dropped,
-            }),
-          );
+      const repairMessages = [...glmMessages, repairInstruction];
+      const repairText = await collectModelResponse(activeChatId, repairMessages, {
+        parentMessageId: plannerParentMessageId,
+      });
+      responsePromptTokens = estimateMessagesTokens(repairMessages);
+      if (PROXY_DEBUG) {
+        const preview = repairText.length > 400 ? `${repairText.slice(0, 400)}...` : repairText;
+        console.log("proxy_debug planner_action_shape_retry_raw:", preview);
+      }
+      const repairRawDispatch = dispatchRaw(parseRawToolCallsLenient(repairText));
+      if (repairRawDispatch) {
+        return repairRawDispatch;
+      }
+      let repaired = tryParseModelOutput(repairText, false);
+      if (!repaired.ok || !repaired.data) {
+        const repairedData = tryRepairPlannerOutput(repairText);
+        if (repairedData) {
+          repaired = { ok: true, data: repairedData };
         }
-        if (toolChoiceRequired && knownActions.length === 0) {
-          const unknownTool = String(parsedData.actions[0]?.tool || "");
-          const content = `Unknown tool: ${unknownTool}`;
-          if (stream) {
-            return deps.sendStreamContent(reply, content, model, glmStats, responsePromptTokens);
-          }
-          return deps.sendContent(reply, content, model, responsePromptTokens, glmStats);
+      }
+      if (!repaired.ok || !repaired.data) {
+        const content = "Model returned invalid planner JSON for an actionable request. Please retry.";
+        return sendFinalContent(content, responsePromptTokens, glmStats);
+      }
+      parsedDataResult = normalizeParsedData(repaired.data);
+      if ("error" in parsedDataResult) {
+        const content = String(parsedDataResult.error || "Unknown tool.");
+        if (stream) {
+          return deps.sendStreamContent(reply, content, model, glmStats, responsePromptTokens);
         }
-        parsedData = { ...parsedData, actions: knownActions };
+        return deps.sendContent(reply, content, model, responsePromptTokens, glmStats);
+      }
+      parsedData = parsedDataResult.data;
+      if (parsedData.actions.length === 0) {
+        const content = "Planner produced no executable actions for an actionable request. Please retry.";
+        return sendFinalContent(content, responsePromptTokens, glmStats);
       }
     }
 
@@ -340,6 +420,42 @@ export const createPlannerFlow = (deps: PlannerFlowDeps) => {
       }
       const content = parsedData.final || "";
       return sendFinalContent(content, responsePromptTokens, glmStats);
+    }
+
+    const primaryAction = parsedData.actions[0];
+    if (primaryAction) {
+      const primaryClass = toolClass(primaryAction.tool);
+      const primarySignature = `${String(primaryAction.tool || "").toLowerCase()}:${stableStringify(primaryAction.args || {})}`;
+      const latestToolMessage = [...sanitizedMessages].reverse().find((msg: any) => msg?.role === "tool" || msg?.tool_call_id);
+      const latestToolResultHash = hashText(String(latestToolMessage?.content || ""));
+      const previous = plannerStallState.get(confirmationScope);
+      const isSameStep =
+        previous &&
+        previous.actionSignature === primarySignature &&
+        previous.resultHash === latestToolResultHash &&
+        primaryClass === "inspect" &&
+        hasToolResult;
+      const repeatCount = isSameStep ? previous.repeatCount + 1 : 1;
+      plannerStallState.set(confirmationScope, {
+        actionSignature: primarySignature,
+        resultHash: latestToolResultHash,
+        repeatCount,
+      });
+      if (isSameStep && repeatCount >= STALL_REPEAT_LIMIT && !toolChoiceRequired) {
+        if (PROXY_DEBUG) {
+          console.log(
+            "proxy_debug planner_stall_detected:",
+            JSON.stringify({
+              confirmationScope,
+              repeatCount,
+              actionSignature: primarySignature,
+            }),
+          );
+        }
+        return requestInstructionFinal(
+          "The same inspection step repeated without new evidence. Using existing tool results, either provide the final answer now or explicitly state what cannot be verified yet. Return concise final output.",
+        );
+      }
     }
 
     const { toolCalls } = buildPlannerToolCalls({

@@ -62,7 +62,7 @@ export const parsePlannerOutput = async (
   if (!parsed.ok && PROXY_PLANNER_MAX_RETRIES > 0) {
     // one retry with corrective message
     const corrective = {
-      role: "assistant",
+      role: "system",
       content: "Return ONLY valid JSON following the schema. No extra text or analysis.",
     };
     const correctedMessages = [...glmMessages, corrective];
@@ -92,7 +92,7 @@ export const parsePlannerOutput = async (
 
   if (!parsed.ok && PROXY_PLANNER_MAX_RETRIES > 1) {
     const stricter = {
-      role: "assistant",
+      role: "system",
       content: "Return ONLY valid JSON object. No markdown, no analysis, no extra keys.",
     };
     const stricterMessages = [...glmMessages, stricter];

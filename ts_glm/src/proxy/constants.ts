@@ -22,8 +22,11 @@ export const PROXY_PLANNER_MAX_RETRIES = Number(process.env.PROXY_PLANNER_MAX_RE
 // <= 0 means unlimited actions per turn.
 export const PROXY_MAX_ACTIONS_PER_TURN = Number(process.env.PROXY_MAX_ACTIONS_PER_TURN || "0");
 export const PROXY_PLANNER_COERCE = process.env.PROXY_PLANNER_COERCE !== "0";
-// Reuse GLM-side chat history across requests (default: enabled). Disable with PROXY_USE_GLM_HISTORY=0.
+// Reuse proxy-side delta/history state across requests (default: enabled). Disable with PROXY_USE_GLM_HISTORY=0.
 export const PROXY_USE_GLM_HISTORY = process.env.PROXY_USE_GLM_HISTORY !== "0";
+// Send full chat history payload on each GLM completion request (default: disabled).
+// Keep this off to rely on chat_id + parent message threading for history.
+export const PROXY_INCLUDE_HISTORY_IN_REQUEST = process.env.PROXY_INCLUDE_HISTORY_IN_REQUEST === "1";
 // Drop prior conversation turns from incoming messages (default: disabled). Enable with PROXY_STRIP_HISTORY=1.
 export const PROXY_STRIP_HISTORY = process.env.PROXY_STRIP_HISTORY === "1";
 export const PROXY_HISTORY_MAX_MESSAGES = Number(process.env.PROXY_HISTORY_MAX_MESSAGES || "0");
@@ -31,6 +34,8 @@ export const PROXY_COMPACT_RESET = process.env.PROXY_COMPACT_RESET !== "0";
 export const PROXY_ALWAYS_SEND_SYSTEM = process.env.PROXY_ALWAYS_SEND_SYSTEM !== "0";
 export const PROXY_TEST_MODE = process.env.PROXY_TEST_MODE === "1";
 export const PROXY_ALLOW_USER_HEURISTICS = process.env.PROXY_ALLOW_USER_HEURISTICS !== "0";
+// Skip planner/tool mode for short conversational closure turns (default: disabled).
+export const PROXY_SKIP_PLANNER_FOR_CLOSURE = process.env.PROXY_SKIP_PLANNER_FOR_CLOSURE === "1";
 
 // OpenCode file-mutation tools can require that the file was previously read (in a prior step).
 // When enabled, the proxy may stage mutations behind an injected read to avoid tool execution errors.

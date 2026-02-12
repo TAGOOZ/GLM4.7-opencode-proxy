@@ -73,5 +73,14 @@ test("planner prompt includes runtime workspace context for tool-enabled turns",
   const modelMessages = Array.isArray(firstCall.messages) ? firstCall.messages : [];
   const systemPrompt = String(modelMessages.find((m: any) => m?.role === "system")?.content || "");
   assert.equal(systemPrompt.includes("Runtime workspace context:"), true);
-  assert.equal(systemPrompt.includes(`- cwd: ${process.cwd()}`), true);
+  assert.equal(
+    systemPrompt.includes("- The proxy cwd may differ from the OpenCode tool runtime cwd."),
+    true,
+  );
+  assert.equal(
+    systemPrompt.includes(
+      "- Prefer user-workspace relative paths unless an absolute workspace path is required.",
+    ),
+    true,
+  );
 });

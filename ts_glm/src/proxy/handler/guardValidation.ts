@@ -237,6 +237,11 @@ const validateAndRewritePath = (params: {
     registry,
   });
   if (pathValidation.guard) return pathValidation.guard;
+  // Keep absolute paths stable. Rewriting absolute -> relative can break downstream
+  // tool runtimes when their cwd differs from the proxy process cwd.
+  if (path.isAbsolute(pathValue)) {
+    return null;
+  }
   if (pathValidation.normalizedPathValue !== pathValue) {
     const key = getPathArgKey(args);
     if (key) {

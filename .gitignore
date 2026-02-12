@@ -24,3 +24,6 @@ ts_glm/dist/
 node_modules/
 webwrapper-eval/evidence/
 webwrapper-eval/tmp/
+ts_glm/tests/chat-intent-gate.test.ts
+ts_glm/tests/non-actionable-turns.test.ts
+ts_glm/tests/planner-actionable-final-repair.test.ts

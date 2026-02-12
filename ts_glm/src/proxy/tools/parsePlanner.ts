@@ -96,7 +96,9 @@ const coercePlannerData = (data: any): ModelOutput => {
     .filter(Boolean) as ModelOutput["actions"];
   const output: ModelOutput = { plan, actions };
   if (actions.length === 0) {
-    output.final = typeof data?.final === "string" ? data.final : "";
+    if (typeof data?.final === "string") {
+      output.final = data.final;
+    }
   }
   if (typeof data?.thought === "string") {
     output.thought = data.thought;

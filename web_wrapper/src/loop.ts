@@ -105,7 +105,7 @@ export const runProtocol = async (options: RunOptions): Promise<{ final: string;
         break;
       }
       const corrective: Message = {
-        role: "assistant",
+        role: "system",
         content: "Return ONLY valid JSON following the schema. No extra text.",
       };
       modelRaw = await options.model.call([...messages, corrective]);

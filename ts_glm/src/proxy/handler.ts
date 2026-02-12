@@ -7,12 +7,13 @@ import {
   PROXY_COMPACT_RESET,
   PROXY_DEBUG,
   PROXY_HISTORY_MAX_MESSAGES,
+  PROXY_INCLUDE_HISTORY_IN_REQUEST,
   PROXY_USE_GLM_HISTORY,
 } from "./constants.js";
 import { compactMessages, estimateMessagesTokens, getContextConfig } from "./context.js";
 import { collectGlmResponseDetailed, convertMessages } from "./messages.js";
 import { buildSignature, buildStreamHeaders, computeDeltaMessages } from "./handler/utils.js";
-import { buildInstructionMessages, buildMessages } from "./handler/messageHelpers.js";
+import { buildMessages } from "./handler/messageHelpers.js";
 import { createHandlerFlows } from "./handler/flows.js";
 import { sendContent, sendStreamContent } from "./handler/responseHelpers.js";
 import { createToolDispatch, type RawDispatchState } from "./handler/dispatch.js";
@@ -34,14 +35,93 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
   const rawDispatchState: RawDispatchState = { signature: "", user: "" };
   const POST_TOOL_SYSTEM = [
     "You have received tool results.",
-    "Continue the task.",
-    "If more tools are needed, return ONLY a JSON object matching the schema with actions.",
-    "If no further tools are needed, return ONLY a JSON object matching the schema with actions empty and include final.",
-    "No extra text or analysis.",
+    "Return ONLY one JSON object matching the planner schema keys: plan, actions, final.",
+    "If more tools are needed: include actions and omit final.",
+    "If no further tools are needed: actions must be empty and final must be a string.",
+    "No markdown and no extra prose.",
   ].join(" ");
+  const toText = (content: any): string => {
+    if (typeof content === "string") return content;
+    try {
+      return JSON.stringify(content ?? "");
+    } catch {
+      return String(content ?? "");
+    }
+  };
+  const clip = (value: string, max: number): string => {
+    const text = String(value || "");
+    return text.length > max ? `${text.slice(0, max)}…` : text;
+  };
+  const POST_TOOL_STATE_WINDOW = 6;
+  const formatAssistantToolAction = (msg: any): string => {
+    const text = toText(msg?.content).trim();
+    const toolCalls = Array.isArray(msg?.tool_calls) ? msg.tool_calls : [];
+    if (toolCalls.length > 0) {
+      const summarized = toolCalls.map((tc: any) => ({
+        id: tc?.id ?? null,
+        name: tc?.function?.name ?? tc?.name ?? null,
+        arguments: tc?.function?.arguments ?? tc?.arguments ?? null,
+      }));
+      const toolCallsText = toText(summarized);
+      return text ? `${text}\nTOOL_CALLS:\n${toolCallsText}` : `TOOL_CALLS:\n${toolCallsText}`;
+    }
+    return text;
+  };
+  const isAssistantActionMessage = (msg: any): boolean => {
+    if (msg?.role !== "assistant") return false;
+    if (Array.isArray(msg?.tool_calls) && msg.tool_calls.length > 0) return true;
+    const text = toText(msg?.content).trimStart();
+    return text.startsWith("[{") || text.startsWith("{\"actions\"");
+  };
+  const buildMinimalPostToolMessages = (sourceMessages: any[]): { role: string; content: string }[] => {
+    const lastUser = [...sourceMessages].reverse().find((msg: any) => msg?.role === "user");
+    const recentAssistantActions = sourceMessages.filter(isAssistantActionMessage).slice(-POST_TOOL_STATE_WINDOW);
+    const recentToolResults = sourceMessages
+      .filter((msg: any) => msg?.role === "tool" || msg?.tool_call_id)
+      .slice(-POST_TOOL_STATE_WINDOW);
+    const lastAssistantAction = recentAssistantActions[recentAssistantActions.length - 1];
+    const lastTool = recentToolResults[recentToolResults.length - 1];
+    const out: { role: string; content: string }[] = [{ role: "system", content: POST_TOOL_SYSTEM }];
+    if (lastUser) {
+      out.push({
+        role: "user",
+        content: `LAST_USER_REQUEST:\n${clip(toText(lastUser.content), 1200)}`,
+      });
+    }
+    if (lastAssistantAction) {
+      out.push({
+        role: "assistant",
+        content: `LAST_ASSISTANT_TOOL_ACTION:\n${clip(formatAssistantToolAction(lastAssistantAction), 2600)}`,
+      });
+    }
+    if (lastTool) {
+      out.push({
+        role: "user",
+        content: `LATEST_TOOL_RESULT:\n${clip(toText(lastTool.content), 3600)}`,
+      });
+    }
+    if (recentAssistantActions.length > 0 || recentToolResults.length > 0) {
+      const executionTimeline = sourceMessages
+        .filter((msg: any) => isAssistantActionMessage(msg) || msg?.role === "tool" || msg?.tool_call_id)
+        .slice(-(POST_TOOL_STATE_WINDOW * 2))
+        .map((msg: any) => {
+          if (isAssistantActionMessage(msg)) {
+            return `ASSISTANT_ACTION:\n${clip(formatAssistantToolAction(msg), 1200)}`;
+          }
+          return `TOOL_RESULT:\n${clip(toText(msg?.content), 1200)}`;
+        })
+        .join("\n\n");
+      out.push({
+        role: "user",
+        content: `RECENT_EXECUTION_STATE (last ${POST_TOOL_STATE_WINDOW} actions/results):\n${executionTimeline}`,
+      });
+    }
+    return out;
+  };
   const { guardAndSendToolCalls, tryHandlePendingConfirmation } = createToolDispatch({
     rawDispatchState,
   });
+  let lastShouldAttemptTools = false;
 
   const { handlePlannerFlow, handleStreamNoTools, handleNonStreamNoTools } = createHandlerFlows({
     client,
@@ -120,7 +200,11 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
         console.log("proxy_debug tool_result_preview:", toolPreview);
       }
     }
-    const runtimeWorkspaceSystem = ["Runtime workspace context:", `- cwd: ${process.cwd()}`].join("\n");
+    const runtimeWorkspaceSystem = [
+      "Runtime workspace context:",
+      "- The proxy cwd may differ from the OpenCode tool runtime cwd.",
+      "- Prefer user-workspace relative paths unless an absolute workspace path is required.",
+    ].join("\n");
     const plannerSystemText = [systemText, runtimeWorkspaceSystem].filter(Boolean).join("\n\n");
     const baseMessages = traceSync(
       "build_base_messages",
@@ -151,6 +235,7 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
       if (useGlmHistory) {
         lastMessages = [];
         lastSignature = "";
+        lastShouldAttemptTools = false;
       }
       if (PROXY_DEBUG) {
         console.log("proxy_debug compaction_reset: true");
@@ -159,11 +244,9 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
     const useHistoryThisRequest = useGlmHistory && !compactionReset;
     let historyToolPromptReseeded = false;
     if (useHistoryThisRequest) {
-      const signature = buildSignature(
-        shouldAttemptTools ? tools : [],
-        shouldAttemptTools ? plannerSystemText : systemText,
-      );
+      const signature = buildSignature(tools, plannerSystemText || systemText);
       const signatureChanged = signature !== lastSignature;
+      const modeFlipRequiresReseed = shouldAttemptTools && !lastShouldAttemptTools;
       const deltaResult = traceSync(
         "history_compute_delta",
         () => computeDeltaMessages(sanitizedMessages, lastMessages),
@@ -177,8 +260,9 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
         resetChat();
         chatId = null;
         lastMessages = [];
+        lastShouldAttemptTools = false;
       }
-      const reseed = deltaResult.reseed || signatureChanged || lastMessages.length === 0;
+      const reseed = deltaResult.reseed || signatureChanged || lastMessages.length === 0 || modeFlipRequiresReseed;
       const deltaMessages = deltaResult.reset || signatureChanged ? sanitizedMessages : deltaResult.delta;
       const shouldInjectSystem = alwaysSendSystem && systemText && tools.length === 0;
       if (PROXY_DEBUG) {
@@ -224,65 +308,50 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
           convertedCount: deltaConverted.length,
         },
       );
-      glmMessages = compacted.messages;
-      glmStats = baseMessages.stats;
+      const includeHistoryInRequest = PROXY_INCLUDE_HISTORY_IN_REQUEST && useHistoryThisRequest;
+      if (compacted.messages.length === 0 && !includeHistoryInRequest) {
+        // Never send an empty request when we are not asking GLM to include chat history.
+        // Fall back to full base messages for this turn.
+        glmMessages = baseMessages.messages;
+        glmStats = baseMessages.stats;
+        if (PROXY_DEBUG) {
+          console.log("proxy_debug empty_delta_fallback_to_base_messages: true");
+        }
+      } else {
+        glmMessages = compacted.messages;
+        glmStats = baseMessages.stats;
+      }
       lastMessages =
         PROXY_HISTORY_MAX_MESSAGES > 0
           ? sanitizedMessages.slice(-PROXY_HISTORY_MAX_MESSAGES)
           : sanitizedMessages;
       lastSignature = signature;
+      lastShouldAttemptTools = shouldAttemptTools;
     } else if (useGlmHistory) {
       lastMessages =
         PROXY_HISTORY_MAX_MESSAGES > 0
           ? sanitizedMessages.slice(-PROXY_HISTORY_MAX_MESSAGES)
           : sanitizedMessages;
-      lastSignature = buildSignature(
-        shouldAttemptTools ? tools : [],
-        shouldAttemptTools ? plannerSystemText : systemText,
-      );
+      lastSignature = buildSignature(tools, plannerSystemText || systemText);
+      lastShouldAttemptTools = shouldAttemptTools;
     }
     if (hasToolResult && shouldAttemptTools) {
-      if (useHistoryThisRequest) {
-        // In history mode, reuse current request payload and add a light post-tool instruction.
-        // Full tool/system reseed happens only when chat state is reset or the signature changes.
-        const postToolSeed = historyToolPromptReseeded
-          ? convertMessages(sanitizedMessages, tools, {
-              toolMaxLines: contextConfig.toolMaxLines,
-              toolMaxChars: contextConfig.toolMaxChars,
-              extraSystem: plannerSystemText,
-            })
-          : glmMessages;
-        const withInstruction = traceSync(
-          "post_tool_compact_messages",
-          () =>
-            compactMessages(
-              [
-                {
-                  role: "system",
-                  content: POST_TOOL_SYSTEM,
-                },
-                ...postToolSeed,
-              ],
-              contextConfig,
-            ),
-          {
-            requestId,
-            instructedCount: postToolSeed.length,
-          },
-        );
-        glmMessages = withInstruction.messages;
-        glmStats = withInstruction.stats;
-      } else {
-        const instructed = buildInstructionMessages(
-          contextConfig,
-          POST_TOOL_SYSTEM,
-          sanitizedMessages,
-          tools,
-          plannerSystemText,
-        );
-        glmMessages = instructed.messages;
-        glmStats = instructed.stats;
-      }
+      const minimalMessages = buildMinimalPostToolMessages(sanitizedMessages);
+      const convertedMinimal = convertMessages(minimalMessages, tools, {
+        toolMaxLines: contextConfig.toolMaxLines,
+        toolMaxChars: contextConfig.toolMaxChars,
+        extraSystem: plannerSystemText,
+      });
+      const withInstruction = traceSync(
+        "post_tool_compact_messages",
+        () => compactMessages(convertedMinimal, contextConfig),
+        {
+          requestId,
+          instructedCount: convertedMinimal.length,
+        },
+      );
+      glmMessages = withInstruction.messages;
+      glmStats = withInstruction.stats;
     }
     let responsePromptTokens = estimateMessagesTokens(glmMessages);
     const streamHeaders = buildStreamHeaders(glmStats);
@@ -310,7 +379,7 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
           const detailed = await collectGlmResponseDetailed(client, chatId, requestMessages, {
             enableThinking: enableThinkingFinal,
             features: featureOverrides,
-            includeHistory: useHistoryThisRequest,
+            includeHistory: PROXY_INCLUDE_HISTORY_IN_REQUEST && useHistoryThisRequest,
             parentMessageId: options?.parentMessageId,
           });
           thinkingRef.value = detailed.thinking;
@@ -327,7 +396,7 @@ const createChatCompletionHandler = ({ client, ensureChat, resetChat }: ChatComp
           prompt_chars_delta_first: promptStats.prompt_chars_delta_first,
           collect_call_index: promptStats.collect_call_index,
           tool_count: shouldAttemptTools ? tools.length : 0,
-          includeHistory: useHistoryThisRequest,
+          includeHistory: PROXY_INCLUDE_HISTORY_IN_REQUEST && useHistoryThisRequest,
           enableThinking: enableThinkingFinal,
           parentMessageId: options?.parentMessageId ?? "[auto]",
         },

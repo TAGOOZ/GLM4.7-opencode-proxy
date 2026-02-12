@@ -10,7 +10,9 @@ const truncateText = (text: string, maxChars: number): string => {
   if (maxChars <= 0) return text;
   const trimmed = text.trim();
   if (trimmed.length <= maxChars) return trimmed;
-  return `${trimmed.slice(0, maxChars)}\n... (${trimmed.length - maxChars} chars truncated) ...`.trim();
+  const head = Math.max(1, Math.ceil(maxChars * 0.7));
+  const tail = Math.max(1, maxChars - head);
+  return `${trimmed.slice(0, head)}\n... (${trimmed.length - maxChars} chars truncated) ...\n${trimmed.slice(-tail)}`.trim();
 };
 
 const extractArgKeys = (parameters: any): string[] => {
@@ -63,13 +65,14 @@ const buildToolPrompt = (tools: any[], extraSystem?: string): string => {
   lines.push("- If tools are needed, include them only in JSON actions (never tool_calls output).");
   lines.push("- Args must be valid JSON and should use declared argument keys.");
   lines.push("- If a tool is required by the request, include an action for it.");
+  lines.push("- For existing files, you MUST read the target file before any write/edit/apply_patch mutation.");
   lines.push("- Prefer read/list/glob/grep before mutation when path is unclear.");
   lines.push("- Use repo-relative paths and explicit targets for file tools.");
   lines.push("- use the tool's declared path key exactly (path/filePath/file_path).");
   lines.push("- never emit read/write/edit/list/listdir actions without an explicit target path.");
   lines.push("- apply_patch/patch must include explicit target files in patch text (*** Update File: ... or diff --git ...).");
   lines.push("- do not emit apply_patch/patch without target file headers in the patch body.");
-  lines.push("- avoid absolute paths, ~, and ../ traversal; these trigger path guards.");
+  lines.push("- avoid ~ and ../ traversal; absolute paths are allowed only when they stay inside workspace.");
   lines.push("- For mutation tools (write/edit/apply_patch/run/delete), emit at most one mutation action per response.");
 
   const prompt = lines.join("\n");

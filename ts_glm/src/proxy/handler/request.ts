@@ -2,11 +2,13 @@ import type { FastifyRequest } from "fastify";
 import crypto from "node:crypto";
 import { debugDump, writeDebugDump } from "../debug.js";
 import {
+  ACTIONABLE_KEYWORDS,
   DEFAULT_MODEL,
   PROXY_ALLOW_USER_HEURISTICS,
   PROXY_ALLOW_WEB_SEARCH,
   PROXY_DEBUG,
   PROXY_DEFAULT_THINKING,
+  PROXY_SKIP_PLANNER_FOR_CLOSURE,
   PROXY_STRIP_HISTORY,
   PROXY_TEST_MODE,
   PROXY_TOOL_LOOP_LIMIT,
@@ -25,6 +27,69 @@ import { filterPlannerTools, shouldAllowTodoTools } from "../tools/policy.js";
 import { inferRecentFilePath } from "../tools/path.js";
 import type { RawDispatchContext } from "./rawToolCalls.js";
 import { EMBEDDED_READ_REGEX } from "../constants.js";
+
+const TOOL_NEEDED_HINTS =
+  /\b(repo|repository|project|code|file|files|folder|directory|implement|change|fix|update|add|remove|refactor|build|create|edit|write|read|search|list|run|install|open|inspect|show)\b/i;
+const SHELL_OR_OPERATOR_HINTS = /[`$><|;&]/;
+const PATH_OR_FILENAME_HINTS = /(?:^|\s)(?:\.{0,2}\/|~\/|\/)[^\s]+|[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,10}\b/;
+const CHAT_GREETING_REGEX = /^(hi|hello|hey|yo|sup|good (morning|afternoon|evening)|howdy)\b[!. ]*$/i;
+const CHAT_CLOSURE_REGEX = /^(thanks|thank you|thx|ok|okay|cool|nice|great|perfect|got it|understood|roger|done)\b[!. ]*$/i;
+const CHAT_IDENTITY_REGEX =
+  /^(what model are (you|u)|which model (are you|r u|are u)|who are you|what are you|what can you do|help)\??$/i;
+const CHAT_SMALLTALK_REGEX = /^(how are you|how r u|you there|are you there)\??$/i;
+
+const hasToolSignals = (text: string): boolean => {
+  const raw = String(text || "");
+  const normalized = raw.toLowerCase().trim();
+  if (!normalized) return false;
+
+  const tokens = normalized
+    .replace(/[^a-z0-9_./-]+/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+  const tokenSet = new Set(tokens);
+  const hasActionKeyword = ACTIONABLE_KEYWORDS.some((kw) => tokenSet.has(kw));
+  if (hasActionKeyword) return true;
+  if (SHELL_OR_OPERATOR_HINTS.test(raw)) return true;
+  if (PATH_OR_FILENAME_HINTS.test(raw)) return true;
+
+  const hasQuestion = raw.includes("?");
+  if (hasQuestion && TOOL_NEEDED_HINTS.test(raw)) return true;
+  if (TOOL_NEEDED_HINTS.test(raw)) return true;
+  return false;
+};
+
+const isDeterministicChatIntent = (text: string): boolean => {
+  const normalized = String(text || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .replace(/\s+([?.!,])/g, "$1");
+  if (!normalized) return false;
+  const words = normalized.split(" ").filter(Boolean);
+  if (words.length > 12 || normalized.length > 80) return false;
+  return (
+    CHAT_GREETING_REGEX.test(normalized) ||
+    CHAT_CLOSURE_REGEX.test(normalized) ||
+    CHAT_IDENTITY_REGEX.test(normalized) ||
+    CHAT_SMALLTALK_REGEX.test(normalized)
+  );
+};
+
+const shouldBypassPlannerForChatIntent = (params: {
+  lastUser: string;
+  hasToolResult: boolean;
+  explicitToolCalls: any[] | null;
+  inferredToolCall: any[] | null;
+  toolChoiceRequired: boolean;
+}): boolean => {
+  const { lastUser, hasToolResult, explicitToolCalls, inferredToolCall, toolChoiceRequired } = params;
+  if (toolChoiceRequired || hasToolResult || explicitToolCalls || inferredToolCall) return false;
+  const text = String(lastUser || "").trim();
+  if (!text) return false;
+  if (hasToolSignals(text)) return false;
+  return isDeterministicChatIntent(text);
+};
 
 const resolveRequiredToolName = (toolChoice: any, toolRegistry: Map<string, ToolInfo>): string | null => {
   if (!toolChoice || typeof toolChoice !== "object") return null;
@@ -359,7 +424,15 @@ export const prepareChatRequest = async (
         inferSearchToolCall(toolRegistry, lastUser)
       : null;
 
-  const shouldAttemptTools = tools.length > 0;
+  const bypassPlannerForChatIntent = shouldBypassPlannerForChatIntent({
+    lastUser,
+    hasToolResult,
+    explicitToolCalls,
+    inferredToolCall,
+    toolChoiceRequired,
+  });
+  const shouldAttemptTools =
+    tools.length > 0 && !(PROXY_SKIP_PLANNER_FOR_CLOSURE && bypassPlannerForChatIntent);
   const systemText = sanitizedMessages
     .filter((msg: any) => msg.role === "system")
     .map((msg: any) => extractContentText(msg.content))

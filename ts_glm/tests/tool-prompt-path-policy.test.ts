@@ -40,11 +40,35 @@ test("tool prompt includes explicit path and patch target guard guidance", () =>
     true,
   );
   assert.equal(
-    prompt.includes("avoid absolute paths, ~, and ../ traversal; these trigger path guards."),
+    prompt.includes("avoid ~ and ../ traversal; absolute paths are allowed only when they stay inside workspace."),
     true,
   );
   assert.equal(
     prompt.includes("use the tool's declared path key exactly (path/filePath/file_path)."),
     true,
   );
+  assert.equal(
+    prompt.includes("For existing files, you MUST read the target file before any write/edit/apply_patch mutation."),
+    true,
+  );
+});
+
+test("tool prompt keeps both head and tail when extra system text is truncated", () => {
+  const head = "HEAD_SENTINEL";
+  const filler = "x".repeat(1200);
+  const tail = "TAIL_SENTINEL";
+  const prompt = buildToolPrompt(
+    [
+      {
+        function: {
+          name: "read",
+          parameters: { properties: { path: { type: "string" } } },
+        },
+      },
+    ] as any,
+    `${head}\n${filler}\n${tail}`,
+  );
+
+  assert.equal(prompt.includes(head), true);
+  assert.equal(prompt.includes(tail), true);
 });

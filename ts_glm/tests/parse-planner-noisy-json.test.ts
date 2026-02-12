@@ -148,6 +148,17 @@ test("tryParseModelOutput drops malformed actions and preserves final when no va
   assert.equal(parsed.data.final, "done");
 });
 
+test("tryParseModelOutput rejects non-string final when actions are empty", () => {
+  const raw = JSON.stringify({
+    plan: ["answer directly"],
+    actions: [],
+    final: true,
+  });
+
+  const parsed = tryParseModelOutput(raw, false);
+  assert.equal(parsed.ok, false);
+});
+
 test("tryParseModelOutput coerces function-style planner actions into tool+args actions", () => {
   const raw = JSON.stringify({
     plan: ["list files"],
